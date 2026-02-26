@@ -1,0 +1,9 @@
+opencv-python
+numpy
+torch
+ultralytics
+pyserial
+mysql-connector-python
+python-dotenv
+PyYAML
+paho-mqtt

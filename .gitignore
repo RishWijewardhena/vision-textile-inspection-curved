@@ -1,0 +1,14 @@
+
+# Environments
+.env
+.vscode/
+
+# Stitch V2 specific
+thread_v2_snaps/
+ChAruco-Calibration/
+old_script.py
+measurement.py
+
+# Python
+__pycache__/
+*.pyc

@@ -1,0 +1,43 @@
+gpu:
+  device: "cuda" # "cuda" or "cpu"
+
+serial:
+  port: "/dev/ttyACM0"
+  baudrate: 115200
+
+camera:
+  index: 0
+  width: 480
+  height: 640
+  calib_path: "camera_calibration.json"
+  extr_path: "camera_extrinsics.json"
+
+output:
+  directory: "thread_v2_snaps"
+  image_retention_seconds: 86400 # 24 hours
+  cleanup_interval: 3600 # 1 hour
+
+database:
+  insert_interval: 2.0 # seconds
+
+processing:
+  capture_interval: 2.0 # seconds
+  min_distance_change_mm: 5.0
+
+defects:
+  consecutive_threshold: 15
+  min_stitch_edge_distance_mm: 5.5
+  max_stitch_edge_distance_mm: 7.5
+  min_stitch_length_mm: 3.5
+  max_stitch_length_mm: 8.5
+
+units:
+  mm_per_pixel: 0.1111
+
+classes:
+  stitch: 0
+  edge: 1
+
+machine:
+  id: "fabric_inspection_l01"
+
