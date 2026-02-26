@@ -6,6 +6,7 @@
 # Stitch V2 specific
 thread_v2_snaps/
 ChAruco-Calibration/
+auto Run curved/
 old_script.py
 measurement.py
 
