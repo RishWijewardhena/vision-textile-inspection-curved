@@ -13,3 +13,9 @@ measurement.py
 # Python
 __pycache__/
 *.pyc
+
+#venv
+.venv/
+
+#logs
+logs/
