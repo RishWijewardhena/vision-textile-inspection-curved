@@ -128,3 +128,39 @@ class DatabaseManager:
 
     def __exit__(self, exc_type, exc_val, exc_tb):
         self.close()
+
+    def reset_total_distance_on_startup(self):
+        """Reset total_distance to 0 for all records on startup to avoid false triggers."""
+        if not self.connect():
+            return False
+
+        update_query = f"UPDATE `{self.db_table}` SET `total_distance` = 0.0"
+        try:
+            self.cursor.execute(update_query)
+            self.connection.commit()
+            print("✅ Total distance reset to 0 for all records on startup.")
+            return True
+        except Error as e:
+            print(f"❌ Failed to reset total distance: {e}")
+            try:
+                self.connection.rollback()
+            except Exception:
+                pass
+            return False
+
+    def get_last_measurement_date(self):
+        """Get the timestamp of the last measurement in the database."""
+        if not self.connect():
+            return None
+
+        query = f"SELECT `timestamp` FROM `{self.db_table}` ORDER BY `timestamp` DESC LIMIT 1"
+        try:
+            self.cursor.execute(query)
+            result = self.cursor.fetchone()
+            if result:
+                return result[0].strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
+            else:
+                return "No records found"
+        except Error as e:
+            print(f"❌ Failed to fetch last measurement date: {e}")
+            return None

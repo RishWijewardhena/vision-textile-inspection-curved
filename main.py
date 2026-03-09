@@ -97,6 +97,8 @@ def process_fabric_immediate(image_processor, camera_manager, serial_communicato
         seam_allowance = summary.get("avg_distance_mm")              # avg_dist -> seam_allowance
         total_distance = serial_communicator.current_total_distance  # total_distance
 
+
+
         ok = db_manager.insert_measurement(
             stitch_length=stitch_length,
             seam_allowance=seam_allowance,
@@ -121,6 +123,8 @@ def process_fabric_immediate(image_processor, camera_manager, serial_communicato
 
     finally:
         processing_lock.release()
+
+
 
 
 def serial_monitor_thread(serial_communicator, image_processor, camera_manager, db_manager):
@@ -216,6 +220,31 @@ def main():
     image_processor = ImageProcessor(model)
     db_manager = DatabaseManager()
     serial_communicator = SerialCommunicator()
+
+    #reset the total distnace to 0 on startup to avoid false triggers
+    if db_manager:
+        last_date=db_manager.get_last_measurement_date()
+        print(f"📅 Last measurement date in DB: {last_date}")
+        today_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        print(f"📅 Current system date: {today_str}")
+
+        if last_date and last_date < today_str:
+            print("🔄 Resetting total distance on startup...")
+            try:
+                db_manager.reset_total_distance_on_startup()
+            except Exception as e:
+                print(f"❌ Failed to reset total distance: {e}")
+
+        elif last_date== "No records found":
+            print("⚠️ No records found in DB adding the first row")
+            db_manager.reset_total_distance_on_startup()
+
+        elif last_date==None:
+            print("⚠️ Could not retrieve last measurement date - skipping total distance reset")
+            
+        else:
+            print("✅ Total distance reset not needed on startup")
+            
 
     threads = []
 
