@@ -228,7 +228,7 @@ def main():
         today_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         print(f"📅 Current system date: {today_str}")
 
-        if last_date and last_date < today_str:
+        if last_date and last_date[:10] < today_str[:10]:  # Compare only YYYY-MM-DD
             print("🔄 Resetting total distance on startup...")
             try:
                 db_manager.reset_total_distance_on_startup()
