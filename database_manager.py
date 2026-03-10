@@ -134,11 +134,12 @@ class DatabaseManager:
         if not self.connect():
             return False
 
-        update_query = f"UPDATE `{self.db_table}` SET `total_distance` = 0.0"
+        reset_query = f"INSERT INTO `{self.db_table}` (`timestamp`, `stitch_length`, `seam_allowance`, `total_distance`) " \
+                      f"SELECT NOW(), 0, 0, 0 FROM `{self.db_table}`" 
         try:
-            self.cursor.execute(update_query)
+            self.cursor.execute(reset_query)
             self.connection.commit()
-            print("✅ Total distance reset to 0 for all records on startup.")
+            print("✅ Total distance reset to 0")
             return True
         except Error as e:
             print(f"❌ Failed to reset total distance: {e}")
@@ -164,3 +165,11 @@ class DatabaseManager:
         except Error as e:
             print(f"❌ Failed to fetch last measurement date: {e}")
             return None
+
+
+if __name__ == "__main__":
+    # Example usage
+    with DatabaseManager() as db:
+        db.reset_total_distance_on_startup()
+        last_date = db.get_last_measurement_date()
+        print(f"Last measurement date: {last_date}")
