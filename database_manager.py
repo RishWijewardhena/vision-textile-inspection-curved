@@ -134,8 +134,11 @@ class DatabaseManager:
         if not self.connect():
             return False
 
-        reset_query = f"INSERT INTO `{self.db_table}` (`timestamp`, `stitch_length`, `seam_allowance`, `total_distance`) " \
-                      f"SELECT NOW(), 0, 0, 0 FROM `{self.db_table}`" 
+        reset_query = f"""
+        INSERT INTO `{self.db_table}`
+        (`timestamp`, `stitch_length`, `seam_allowance`, `total_distance`)
+        VALUES (NOW(), 0, 0, 0)
+        """
         try:
             self.cursor.execute(reset_query)
             self.connection.commit()
