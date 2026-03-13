@@ -9,6 +9,16 @@ import os
 import config
 from calibration import get_mm_per_pixel
 
+# Constants for edge detection
+EDGE_CANNY_LOW = 50
+EDGE_CANNY_HIGH = 150
+EDGE_BLUR_KERNEL = 7
+EDGE_DILATE_KERNEL = 3
+EDGE_ROI_TOP_FRACTION = 0.0
+EDGE_ROI_BOTTOM_FRACTION = 1.0
+EDGE_ROI_LEFT_FRACTION = 0.0
+EDGE_ROI_RIGHT_FRACTION = 1.0
+EDGE_ENVELOPE_SMOOTH_KERNEL = 5
 
 class ImageProcessor:
     def __init__(self, model):
@@ -176,6 +186,23 @@ class ImageProcessor:
                         })
                     except Exception as e:
                         print(f"Error calculating perpendicular distance: {e}")
+
+            # If masks existed but we still couldn't compute any distances (e.g., no edge transition),
+            # fall back to using the top edge line from detected edge centers.
+            if valid_distance_count == 0 and edge_centers:
+                for stitch_center in stitch_centers:
+                    distance_pixels = abs(stitch_center[1] - top_edge_y_line)
+                    distance_mm = distance_pixels * self.mm_per_pixel
+                    total_distance_mm += distance_mm
+                    valid_distance_count += 1
+
+                    all_distances.append({
+                        'stitch_center': stitch_center,
+                        'edge_y': top_edge_y_line,
+                        'distance_pixels': distance_pixels,
+                        'distance_mm': distance_mm
+                    })
+                print("[WARNING] Mask found but no edge transition detected; falling back to top-edge line distance.")
         else:
             # Fallback: use y-distance to estimated top edge line
             for stitch_center in stitch_centers:
@@ -204,6 +231,280 @@ class ImageProcessor:
             'edge_y_line': top_edge_y_line,
             'all_distances': all_distances,
             'avg_distance_mm': avg_distance_mm
+        }
+
+    def detect_fabric_edge_canny(self, frame, canny_low=EDGE_CANNY_LOW, canny_high=EDGE_CANNY_HIGH,
+                                blur_ksize=EDGE_BLUR_KERNEL, dilate_ksize=EDGE_DILATE_KERNEL,
+                                roi_top_frac=EDGE_ROI_TOP_FRACTION,
+                                roi_bottom_frac=EDGE_ROI_BOTTOM_FRACTION,
+                                roi_left_frac=EDGE_ROI_LEFT_FRACTION,
+                                roi_right_frac=EDGE_ROI_RIGHT_FRACTION,
+                                smooth_ksize=EDGE_ENVELOPE_SMOOTH_KERNEL):
+        """Detect fabric edge using Canny edge detection and return the lower envelope.
+
+        Strategy:
+            1. Convert to grayscale and blur to reduce noise.
+            2. Apply Canny edge detection.
+            3. Optionally dilate to connect nearby edge fragments.
+            4. Restrict search to a rectangular ROI defined by fractional bounds
+            (width: roi_left_frac to roi_right_frac, height: roi_top_frac to roi_bottom_frac).
+            5. For each column inside the ROI, find the bottommost edge pixel — this traces the fabric edge.
+            6. Smooth the resulting envelope with a median filter.
+
+        Args:
+            frame: Input BGR image from camera.
+            canny_low: Lower threshold for Canny.
+            canny_high: Upper threshold for Canny.
+            blur_ksize: Gaussian blur kernel size (odd number).
+            dilate_ksize: Dilation kernel size to connect nearby edges (0 = skip).
+            roi_top_frac: Top boundary of ROI as fraction of image height (0.0–1.0).
+            roi_bottom_frac: Bottom boundary of ROI as fraction of image height (0.0–1.0).
+            roi_left_frac: Left boundary of ROI as fraction of image width (0.0–1.0).
+            roi_right_frac: Right boundary of ROI as fraction of image width (0.0–1.0).
+            smooth_ksize: Kernel size for median smoothing of the envelope (odd, 0 = skip).
+
+        Returns:
+            envelope: 1D int array of length w. envelope[x] = y-coordinate of the
+                    detected fabric edge in column x, or -1 if no edge found.
+            edge_map: Binary edge image (useful for visualization / debugging).
+            roi_rect: Tuple (roi_x1, roi_y1, roi_x2, roi_y2) pixel coordinates of the ROI rectangle.
+        """
+        h, w = frame.shape[:2]
+
+        # 1. Grayscale + blur
+        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        if blur_ksize > 0:
+            ksize = blur_ksize if blur_ksize % 2 == 1 else blur_ksize + 1
+            gray = cv2.GaussianBlur(gray, (ksize, ksize), 0)
+
+        # 2. Canny edge detection
+        edges = cv2.Canny(gray, canny_low, canny_high)
+
+        # 3. Optional dilation to bridge small gaps
+        if dilate_ksize > 0:
+            kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (dilate_ksize, dilate_ksize))
+            edges = cv2.dilate(edges, kernel, iterations=1)
+
+        # 3.5. Filter contours to keep only lengthy edges, discard short ones
+        contours, _ = cv2.findContours(edges, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        min_length = 100  # Minimum contour length to keep
+        long_contours = [c for c in contours if cv2.arcLength(c, False) > min_length]
+        edges = np.zeros_like(edges)
+        if long_contours:
+            cv2.drawContours(edges, long_contours, -1, 255, 3)  # Thicker lines
+
+        # 4. Mask out everything OUTSIDE the rectangular ROI
+        roi_y1 = max(0, min(int(h * roi_top_frac), h - 1))
+        roi_y2 = max(roi_y1 + 1, min(int(h * roi_bottom_frac), h))
+        roi_x1 = max(0, min(int(w * roi_left_frac), w - 1))
+        roi_x2 = max(roi_x1 + 1, min(int(w * roi_right_frac), w))
+
+        mask = np.zeros_like(edges)
+        mask[roi_y1:roi_y2, roi_x1:roi_x2] = 255
+        edges = cv2.bitwise_and(edges, mask)
+
+        roi_rect = (roi_x1, roi_y1, roi_x2, roi_y2)
+
+        # 5. For each column, find the BOTTOMMOST edge pixel (lower envelope)
+        envelope = np.full((w,), -1, dtype=int)
+        # Flip vertically so argmax finds the bottom-most pixel first
+        rev = edges[::-1, :]
+        has_any = rev.any(axis=0)
+        idx_in_rev = np.argmax(rev > 0, axis=0)
+
+        for x in range(w):
+            if has_any[x]:
+                envelope[x] = h - 1 - idx_in_rev[x]
+
+        # 6. Smooth the envelope with a median filter to remove noise
+        if smooth_ksize > 0:
+            ksize = smooth_ksize if smooth_ksize % 2 == 1 else smooth_ksize + 1
+            valid_mask = envelope >= 0
+            if valid_mask.sum() > ksize:
+                # Only smooth valid entries; keep -1 for invalid
+                temp = envelope.astype(np.float32).copy()
+                temp[~valid_mask] = np.nan
+                # Fill NaN gaps with nearest valid for filtering, then restore
+                filled = temp.copy()
+                # Forward fill
+                for i in range(1, w):
+                    if np.isnan(filled[i]) and not np.isnan(filled[i-1]):
+                        filled[i] = filled[i-1]
+                # Backward fill
+                for i in range(w-2, -1, -1):
+                    if np.isnan(filled[i]) and not np.isnan(filled[i+1]):
+                        filled[i] = filled[i+1]
+
+                if not np.isnan(filled).all():
+                    filled = np.nan_to_num(filled, nan=0.0).astype(int)
+                    # cv2.medianBlur only supports uint8, but envelope values can exceed 255.
+                    # Use a manual sliding-window median instead.
+                    half_k = ksize // 2
+                    smoothed = filled.copy()
+                    for i in range(half_k, w - half_k):
+                        smoothed[i] = int(np.median(filled[i - half_k : i + half_k + 1]))
+                    # Restore invalids
+                    envelope[valid_mask] = smoothed[valid_mask]
+
+        return envelope, edges, roi_rect
+
+    def calculate_stitch_edge_distances_canny(self, result):
+        """
+        Calculate the distance between stitches and edge using 
+        Canny-based lower envelope detection.
+        """
+        stitch_centers = []
+        
+        # 0. Prepare frame dimensions (needed for ROI filtering)
+        frame = result.orig_img
+        h, w = frame.shape[:2]
+
+        # 1. Collect stitch centers from YOLO/Object Detection boxes
+        #    Only keep boxes inside the central ROI (middle 50% width, middle 50% height)
+        if result.boxes is not None and len(result.boxes) > 0:
+            boxes = result.boxes.xyxy.cpu().numpy()
+            classes = result.boxes.cls.cpu().numpy()
+            confidence = result.boxes.conf.cpu().numpy()
+
+            # Central region (25%–75%) in both axes
+            roi_x1 = 0.25
+            roi_x2 = 0.75
+            roi_y1 = 0.25
+            roi_y2 = 0.75
+
+            for i, (x1, y1, x2, y2) in enumerate(boxes):
+                if confidence[i] >= 0.3 and int(classes[i]) == config.STITCH_CLASS_ID:
+                    center_x = (x1 + x2) / 2
+                    center_y = (y1 + y2) / 2
+
+                    # Ignore boxes whose center is outside the central ROI
+                    if not (roi_x1 <= center_x / w <= roi_x2 and roi_y1 <= center_y / h <= roi_y2):
+                        continue
+
+                    stitch_centers.append((center_x, center_y))
+
+        # 2. Run Canny Edge Detection to get the fabric boundary (envelope)
+        # Use your custom function with a restricted ROI to ignore corner edges
+        envelope, edge_map, _ = self.detect_fabric_edge_canny(
+            frame,
+            roi_top_frac=roi_y1,
+            roi_bottom_frac=roi_y2,
+            roi_left_frac=roi_x1,
+            roi_right_frac=roi_x2,
+        )
+
+        all_distances = []
+        total_distance_mm = 0.0
+        valid_distance_count = 0
+
+        # 3. Calculate distances using the envelope
+        for cx, cy in stitch_centers:
+            ix, iy = int(cx), int(cy)
+            
+            # Ensure coordinates are within image bounds
+            if 0 <= ix < w and 0 <= iy < h:
+                edge_y = envelope[ix]
+                
+                # If an edge was actually found in this column (edge_y != -1)
+                if edge_y != -1:
+                    # Vertical distance in pixels
+                    distance_pixels = abs(iy - edge_y)
+                    distance_mm = distance_pixels * self.mm_per_pixel
+                    
+                    total_distance_mm += distance_mm
+                    valid_distance_count += 1
+
+                    all_distances.append({
+                        'stitch_center': (cx, cy),
+                        'edge_y': float(edge_y),
+                        'distance_pixels': float(distance_pixels),
+                        'distance_mm': float(distance_mm)
+                    })
+
+        # 4. Final aggregation
+        avg_distance_mm = total_distance_mm / valid_distance_count if valid_distance_count > 0 else None
+
+        # Optional: Logic to handle cases where no edges were found in stitch columns
+        if avg_distance_mm is None:
+            # If we detected an edge envelope anywhere, use its mean y as a fallback edge line.
+            edge_ys = [y for y in envelope if y != -1]
+            if edge_ys and stitch_centers:
+                fallback_edge_y = float(np.mean(edge_ys))
+                for cx, cy in stitch_centers:
+                    distance_pixels = abs(cy - fallback_edge_y)
+                    distance_mm = distance_pixels * self.mm_per_pixel
+                    all_distances.append({
+                        'stitch_center': (cx, cy),
+                        'edge_y': fallback_edge_y,
+                        'distance_pixels': float(distance_pixels),
+                        'distance_mm': float(distance_mm)
+                    })
+                    total_distance_mm += distance_mm
+                valid_distance_count = len(stitch_centers)
+                avg_distance_mm = total_distance_mm / valid_distance_count
+                print("[WARNING] No edge found in stitch columns: using mean envelope y fallback for distance calculation.")
+            else:
+                print("[WARNING] No fabric edge detected in columns containing stitches.")
+
+        # Debug logging: why avg_distance_mm might be None
+        stitch_count = len(stitch_centers)
+        edge_columns = sum(1 for y in envelope if y != -1)
+        calculated_distances = len(all_distances)
+        print(f"[DEBUG] stitch_centers={stitch_count}, edge_columns={edge_columns}, distances_computed={calculated_distances}, avg_distance_mm={avg_distance_mm}")
+
+        # Provide a minimal edge_centers list so caller code can report an edge count.
+        # We use a representative point (center x, topmost detected edge y) when available.
+        edge_centers = []
+        if envelope is not None:
+            ys = [y for y in envelope if y != -1]
+            if ys:
+                top_y = min(ys)
+                edge_centers.append((w / 2.0, float(top_y)))
+
+        return {
+            'stitch_centers': stitch_centers,
+            'edge_centers': edge_centers,
+            'edge_map': edge_map, # Pass this back if you want to overlay the green line later
+            'all_distances': all_distances,
+            'avg_distance_mm': avg_distance_mm
+        }
+
+    def calculate_stitch_edge_distances_vote(self, result):
+        """Hybrid selector: prefer YOLO segmentation, fallback to Canny, then last-known.
+
+        Strategy:
+            1. Try YOLO segmentation first (robust to lighting / noise).
+            2. If YOLO produces 0 distances, fall back to Canny edge detection.
+            3. If both fail, return `avg_distance_mm=None` (handled later by fallback logic).
+        """
+
+        # Run both methods so we can compare and fall back cleanly.
+        seg_res = self.calculate_stitch_edge_distances(result)
+        canny_res = self.calculate_stitch_edge_distances_canny(result)
+
+        seg_count = len(seg_res.get('all_distances', []))
+        canny_count = len(canny_res.get('all_distances', []))
+
+        # Priority selection: prefer YOLO segmentation if it produced any distances
+        if seg_count > 0:
+            final_res = seg_res
+            vote_source = 'yolo_segmentation'
+        elif canny_count > 0:
+            final_res = canny_res
+            vote_source = 'canny'
+        else:
+            final_res = canny_res  # keep structure consistent
+            vote_source = 'none'
+
+        return {
+            'stitch_centers': final_res.get('stitch_centers', []),
+            'edge_centers': final_res.get('edge_centers', []),
+            'edge_map': final_res.get('edge_map'),
+            'all_distances': final_res.get('all_distances', []),
+            'avg_distance_mm': final_res.get('avg_distance_mm'),
+            'vote_source': vote_source,
+            'segmentation_result': seg_res,
+            'canny_result': canny_res,
         }
 
     def check_defects(self, predictions, distance_results):
@@ -273,10 +574,26 @@ class ImageProcessor:
         else:
             preds = np.array([])
 
-        dist_res = self.calculate_stitch_edge_distances(result)
+        # Use both segmentation + Canny and combine their outputs via a vote/weighting system
+        dist_res = self.calculate_stitch_edge_distances_vote(result)
+
         defects, coverage_info = self.check_defects(preds, dist_res)
 
-        annotated = result.plot()
+        # If we couldn't measure seam allowance this frame, reuse the last known good value.
+        # This prevents repeated "Not measurable" results when edge detection is temporarily unreliable.
+        if coverage_info.get("avg_stitch_edge_distance_mm") is None and self.last_avg_stitch_edge_distance_mm is not None:
+            coverage_info["avg_stitch_edge_distance_mm"] = self.last_avg_stitch_edge_distance_mm
+            print("[INFO] No seam allowance calculable this frame — reusing last measured value.")
+
+        # Draw without YOLO segmentation masks (so we can overlay our Canny-based edge)
+        annotated = result.plot(masks=False)
+
+        # Overlay the Canny edge detection result (green) for visualization
+        edge_map = dist_res.get('edge_map')
+        if edge_map is not None:
+            # edge_map is a binary image; overlay it in green
+            mask = edge_map > 0
+            annotated[mask] = (0, 255, 0)
 
         # Draw stitch centers
         for cx, cy in dist_res['stitch_centers']:
@@ -382,6 +699,18 @@ class ImageProcessor:
                 (0, 0, 255),
                 2
             )
+
+        vote_source = dist_res.get('vote_source', 'unknown')
+
+        cv2.putText(
+            annotated,
+            f"Edge vote: {vote_source}",
+            (10, 140),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.5,
+            (0, 215, 255),
+            1
+        )
 
         results_summary = {
             "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),

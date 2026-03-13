@@ -36,7 +36,7 @@ units:
 
 classes:
   stitch: 0
-  edge: 1
+  edge: 2
 
 machine:
   id: "fabric_inspection_l01"
