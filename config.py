@@ -69,6 +69,20 @@ MIN_DISTANCE_CHANGE_MM = config['processing']['min_distance_change_mm']
 CONSECUTIVE_DEFECT_THRESHOLD = config['defects']['consecutive_threshold']
 
 # ---------------------------
+# Offsets (from .env)
+# ---------------------------
+STITCH_LENGTH_OFFSET_MM = float(os.getenv("STITCH_LENGTH_OFFSET_MM", "2.0"))
+SEAM_ALLOWANCE_OFFSET_MM = float(os.getenv("SEAM_ALLOWANCE_OFFSET_MM", "4.0"))
+
+# ---------------------------
+# Ideal Ranges
+# ---------------------------
+IDEAL_SEAM_ALLOWANCE_MM_MIN = config['ideal_ranges']['seam_allowance_mm_min']
+IDEAL_SEAM_ALLOWANCE_MM_MAX = config['ideal_ranges']['seam_allowance_mm_max']
+IDEAL_STITCH_LENGTH_MM_MIN = config['ideal_ranges']['stitch_length_mm_min']
+IDEAL_STITCH_LENGTH_MM_MAX = config['ideal_ranges']['stitch_length_mm_max']
+
+# ---------------------------
 # Units and Classes
 # ---------------------------
 CALIB_PATH = config['camera']['calib_path']

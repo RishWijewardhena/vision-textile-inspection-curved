@@ -274,6 +274,7 @@ def main():
 
     try:
         while not shutdown_event.is_set():
+            # print("⏳ Main thread idle - waiting for serial triggers...")
             time.sleep(0.1)
     except KeyboardInterrupt:
         print("\n🛑 Shutdown requested...")

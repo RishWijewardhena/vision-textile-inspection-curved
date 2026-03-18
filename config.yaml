@@ -31,6 +31,12 @@ defects:
   min_stitch_length_mm: 3.5
   max_stitch_length_mm: 8.5
 
+ideal_ranges:
+  seam_allowance_mm_min: 6.0
+  seam_allowance_mm_max: 7.0
+  stitch_length_mm_min: 4.0
+  stitch_length_mm_max: 5.0
+
 units:
   mm_per_pixel: 0.1111
 

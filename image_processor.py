@@ -93,11 +93,23 @@ class ImageProcessor:
         stitch_centers = []
         edge_centers = []
 
+        # Mask dimensions
+        if hasattr(result, 'orig_img') and result.orig_img is not None:
+            mask_h, mask_w = result.orig_img.shape[:2]
+        else:
+            mask_h, mask_w = config.FRAME_H, config.FRAME_W
+
         # Collect stitch & edge centers from boxes
         if result.boxes is not None and len(result.boxes) > 0:
             boxes = result.boxes.xyxy.cpu().numpy()
             classes = result.boxes.cls.cpu().numpy()
             confidence = result.boxes.conf.cpu().numpy()
+
+            # Central region (25%–75%) in both axes to avoid corner artifacts
+            roi_x1 = 0.25
+            roi_x2 = 0.75
+            roi_y1 = 0.25
+            roi_y2 = 0.75
 
             for i, (x1, y1, x2, y2) in enumerate(boxes):
                 if confidence[i] >= 0.3:
@@ -105,15 +117,15 @@ class ImageProcessor:
                     center_y = (y1 + y2) / 2
 
                     if int(classes[i]) == config.STITCH_CLASS_ID:
+                        # Ignore boxes whose center is outside the central ROI
+                        if not (roi_x1 <= center_x / mask_w <= roi_x2 and roi_y1 <= center_y / mask_h <= roi_y2):
+                            continue
                         stitch_centers.append((center_x, center_y))
                     elif int(classes[i]) == config.EDGE_CLASS_ID:
+                        # Ignore boxes whose center is outside the central ROI
+                        if not (roi_x1 <= center_x / mask_w <= roi_x2 and roi_y1 <= center_y / mask_h <= roi_y2):
+                            continue
                         edge_centers.append((center_x, center_y))
-
-        # Mask dimensions
-        if hasattr(result, 'orig_img') and result.orig_img is not None:
-            mask_h, mask_w = result.orig_img.shape[:2]
-        else:
-            mask_h, mask_w = config.FRAME_H, config.FRAME_W
 
         combined_edge_mask = None
 
@@ -547,6 +559,12 @@ class ImageProcessor:
             sum(s['length_mm'] for s in stitch_lengths) / len(stitch_lengths)
             if stitch_lengths else None
         )
+
+        # Apply offsets
+        if coverage_info["avg_stitch_length_mm"] is not None:
+            coverage_info["avg_stitch_length_mm"] += config.STITCH_LENGTH_OFFSET_MM
+        if coverage_info["avg_stitch_edge_distance_mm"] is not None:
+            coverage_info["avg_stitch_edge_distance_mm"] += config.SEAM_ALLOWANCE_OFFSET_MM
 
         coverage_info["stitch_length_defects"] = []
         coverage_info["stitch_lengths"] = stitch_lengths
