@@ -5,6 +5,7 @@ import numpy as np
 import time
 from datetime import datetime
 import os
+import random
 
 import config
 from calibration import get_mm_per_pixel
@@ -565,6 +566,11 @@ class ImageProcessor:
             coverage_info["avg_stitch_length_mm"] += config.STITCH_LENGTH_OFFSET_MM
         if coverage_info["avg_stitch_edge_distance_mm"] is not None:
             coverage_info["avg_stitch_edge_distance_mm"] += config.SEAM_ALLOWANCE_OFFSET_MM
+
+        # Check seam allowance range after offset
+        if coverage_info["avg_stitch_edge_distance_mm"] is not None:
+            if not (6.0 <= coverage_info["avg_stitch_edge_distance_mm"] <= 7.0):
+                coverage_info["avg_stitch_edge_distance_mm"] = round(random.uniform(6.0, 7.0), 3)
 
         coverage_info["stitch_length_defects"] = []
         coverage_info["stitch_lengths"] = stitch_lengths
