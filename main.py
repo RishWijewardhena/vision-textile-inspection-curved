@@ -83,7 +83,6 @@ def process_fabric_immediate(image_processor, camera_manager, serial_communicato
 
         if summary.get('avg_stitch_length_mm') is not None:
             print(f"   ├─ Avg Stitch Length: {summary['avg_stitch_length_mm']:.2f}mm")
-            print(f"   ├─ Stitches per inch: {summary['stitches_per_inch']:.1f}")
         else:
             print("   ├─ Stitch Length: Not measurable")
 
