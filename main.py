@@ -27,6 +27,7 @@ last_processed_distance = 0.0
 
 def sigint_handler(sig, frame):
     print('Interrupted - shutting down threads...')
+    
     shutdown_event.set()
     time.sleep(1)
     sys.exit(0)
@@ -58,7 +59,7 @@ def process_fabric_immediate(image_processor, camera_manager, serial_communicato
         print("✅ Frame captured, starting AI inference...")
         start_time = time.time()
 
-        annotated, summary, defects, result = image_processor.process_frame(
+        annotated, summary, result = image_processor.process_frame(
             frame,
             serial_communicator.current_total_distance
         )
@@ -78,15 +79,13 @@ def process_fabric_immediate(image_processor, camera_manager, serial_communicato
         print(f"   ├─ Total Edges: {summary['edge_count']}")
 
         if summary.get('avg_stitch_length_mm') is not None:
-            length_status = "❌ DEFECT" if defects.get('stitch_length', False) else "✅ OK"
-            print(f"   ├─ Avg Stitch Length: {summary['avg_stitch_length_mm']:.2f}mm {length_status}")
+            print(f"   ├─ Avg Stitch Length: {summary['avg_stitch_length_mm']:.2f}mm")
             print(f"   ├─ Stitches per inch: {summary['stitches_per_inch']:.1f}")
         else:
             print("   ├─ Stitch Length: Not measurable")
 
         if summary.get('avg_distance_mm') is not None:
-            dist_status = "❌ DEFECT" if defects.get('stitch_edge_distance', False) else "✅ OK"
-            print(f"   ├─ Avg Stitch-Top Edge Distance: {summary['avg_distance_mm']:.2f}mm {dist_status}")
+            print(f"   ├─ Avg Stitch-Top Edge Distance: {summary['avg_distance_mm']:.2f}mm")
         else:
             print("   ├─ Avg Stitch-Top Edge Distance: Not measurable")
 
@@ -109,12 +108,6 @@ def process_fabric_immediate(image_processor, camera_manager, serial_communicato
             print("✅ MySQL insert done (per-frame)")
         else:
             print("❌ MySQL insert failed (per-frame)")
-
-        defects_found = image_processor.process_defects((annotated, summary, defects, result), ts)
-        if defects_found:
-            print("📩 Defects detected - image saved")
-        else:
-            print("✅ NO DEFECTS - Fabric passed inspection")
 
         print(f"⚡ ANALYSIS COMPLETE: {processing_time:.2f}s total")
 
