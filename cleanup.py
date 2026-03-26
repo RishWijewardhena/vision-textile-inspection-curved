@@ -4,9 +4,10 @@ import time
 import config
 from datetime import datetime
 
-def image_cleanup_thread(shutdown_event):
+def image_cleanup_thread(shutdown_event, active_session_dir=None):
     """Thread that deletes images and folders older than IMAGE_RETENTION_SECONDS"""
     print("[INFO] Image cleanup thread started")
+    active_session_dir = os.path.abspath(active_session_dir) if active_session_dir else None
     while not shutdown_event.is_set():
         try:
             current_time = time.time()
@@ -15,6 +16,10 @@ def image_cleanup_thread(shutdown_event):
             # Iterate through all session folders in output directory
             for folder_name in os.listdir(config.OUTPUT_DIR):
                 folder_path = os.path.join(config.OUTPUT_DIR, folder_name)
+
+                # Never delete the currently active session folder.
+                if active_session_dir and os.path.abspath(folder_path) == active_session_dir:
+                    continue
 
                 # Skip if not a directory
                 if not os.path.isdir(folder_path):
@@ -47,6 +52,8 @@ def image_cleanup_thread(shutdown_event):
             # Clean up empty folders (even if not old enough)
             for folder_name in os.listdir(config.OUTPUT_DIR):
                 folder_path = os.path.join(config.OUTPUT_DIR, folder_name)
+                if active_session_dir and os.path.abspath(folder_path) == active_session_dir:
+                    continue
                 if os.path.isdir(folder_path) and not os.listdir(folder_path):
                     try:
                         os.rmdir(folder_path)
