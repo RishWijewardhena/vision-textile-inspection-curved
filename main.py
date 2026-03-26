@@ -123,7 +123,7 @@ def process_fabric_immediate(image_processor, camera_manager, serial_communicato
 
 
 
-def serial_monitor_thread(serial_communicator, image_processor, camera_manager, db_manager):
+def serial_monitor_thread(serial_communicator, image_processor, camera_manager, db_manager, session_output_dir):
     """
     Thread that monitors serial for stitch count / distance updates
     and triggers image processing when distance change criteria are met.
@@ -253,7 +253,7 @@ def main():
     if serial_communicator.serial_port is not None:
         serial_thread = threading.Thread(
             target=serial_monitor_thread,
-            args=(serial_communicator, image_processor, camera_manager, db_manager),
+            args=(serial_communicator, image_processor, camera_manager, db_manager, session_output_dir),
             daemon=True
         )
         serial_thread.start()
@@ -264,7 +264,7 @@ def main():
 
     cleanup_thread = threading.Thread(
         target=image_cleanup_thread,
-        args=(shutdown_event,),
+        args=(shutdown_event, session_output_dir),
         daemon=True
     )
     cleanup_thread.start()
