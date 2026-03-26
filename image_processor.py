@@ -27,14 +27,12 @@ class ImageProcessor:
         Initializes the ImageProcessor object with the given model.
 
         Args:
-            model (object): The deep learning model used for defect detection.
+            model (object): The YOLO model used for stitch and edge detection.
 
         Attributes:
-            model (object): The deep learning model used for defect detection.
+            model (object): The YOLO model used for stitch and edge detection.
             mm_per_pixel (float): The conversion factor from pixels to millimeters.
             last_processed_time (float): The timestamp of the last processed frame (epoch seconds).
-            consecutive_stitch_length_defects (int): The number of consecutive frames with stitch length defects.
-            consecutive_stitch_edge_defects (int): The number of consecutive frames with stitch edge defects.
 
             last_avg_stitch_length_mm (float|None): latest measurable stitch length for DB logging.
             last_avg_stitch_edge_distance_mm (float|None): latest measurable seam allowance for DB logging.
@@ -42,9 +40,6 @@ class ImageProcessor:
         self.model = model
         self.mm_per_pixel = get_mm_per_pixel()
         self.last_processed_time = 0.0
-
-        self.consecutive_stitch_length_defects = 0
-        self.consecutive_stitch_edge_defects = 0
 
         # ✅ Latest values to be inserted into DB by mysql thread
         self.last_avg_stitch_length_mm = None
@@ -520,24 +515,14 @@ class ImageProcessor:
             'canny_result': canny_res,
         }
 
-    def check_defects(self, predictions, distance_results):
+    def calculate_measurements(self, predictions, distance_results):
         """
-        Defect checking.
-        Currently your original code is a placeholder that always returns False for both defects.
+        Calculate stitch measurements from predictions.
         """
-        defects = {
-            "stitch_edge_distance": False,
-            "stitch_length": False,
-        }
-
         coverage_info = {}
         coverage_info["avg_stitch_edge_distance_mm"] = distance_results.get('avg_distance_mm')
         has_distance_measurements = coverage_info["avg_stitch_edge_distance_mm"] is not None
         coverage_info["has_distance_measurement"] = has_distance_measurements
-
-        # Your original code resets consecutive counters each frame
-        self.consecutive_stitch_edge_defects = 0
-        self.consecutive_stitch_length_defects = 0
 
         # Process stitch lengths from predictions
         stitch_lengths = []
@@ -567,14 +552,8 @@ class ImageProcessor:
         if coverage_info["avg_stitch_edge_distance_mm"] is not None:
             coverage_info["avg_stitch_edge_distance_mm"] += config.SEAM_ALLOWANCE_OFFSET_MM
 
-        # Check seam allowance range after offset
-        if coverage_info["avg_stitch_edge_distance_mm"] is not None:
-            if not (6.0 <= coverage_info["avg_stitch_edge_distance_mm"] <= 7.0):
-                coverage_info["avg_stitch_edge_distance_mm"] = round(random.uniform(6.0, 7.0), 3)
-
-        coverage_info["stitch_length_defects"] = []
         coverage_info["stitch_lengths"] = stitch_lengths
-        return defects, coverage_info
+        return coverage_info
 
     def process_frame(self, frame, current_total_distance):
         """Process a single frame and return results"""
@@ -601,7 +580,7 @@ class ImageProcessor:
         # Use both segmentation + Canny and combine their outputs via a vote/weighting system
         dist_res = self.calculate_stitch_edge_distances_vote(result)
 
-        defects, coverage_info = self.check_defects(preds, dist_res)
+        coverage_info = self.calculate_measurements(preds, dist_res)
 
         # If we couldn't measure seam allowance this frame, reuse the last known good value.
         # This prevents repeated "Not measurable" results when edge detection is temporarily unreliable.
@@ -646,27 +625,8 @@ class ImageProcessor:
         cv2.putText(annotated, f"Total Edges: {edge_count}", (10, 60),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 0), 2)
 
-        cv2.putText(annotated, f"Total Distance: {current_total_distance:.1f}mm", (10, 190),
+        cv2.putText(annotated, f"Total Distance: {current_total_distance:.1f}mm", (10, 90),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 165, 0), 2)
-
-        cv2.putText(
-            annotated,
-            f"Consec Length Defects: {self.consecutive_stitch_length_defects}/{config.CONSECUTIVE_DEFECT_THRESHOLD}",
-            (10, 150),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            0.5,
-            (255, 255, 0),
-            1
-        )
-        cv2.putText(
-            annotated,
-            f"Consec Edge Defects: {self.consecutive_stitch_edge_defects}/{config.CONSECUTIVE_DEFECT_THRESHOLD}",
-            (10, 170),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            0.5,
-            (255, 255, 0),
-            1
-        )
 
         # Avg stitch length + stitches/inch
         if coverage_info.get("avg_stitch_length_mm") is not None:
@@ -743,10 +703,7 @@ class ImageProcessor:
             "avg_stitch_length_mm": coverage_info.get("avg_stitch_length_mm"),
             "stitches_per_inch": self.calculate_stitches_per_inch(coverage_info.get("avg_stitch_length_mm", 0))
             if coverage_info.get("avg_stitch_length_mm") else 0,
-            "consecutive_stitch_length_defects": self.consecutive_stitch_length_defects,
-            "consecutive_stitch_edge_defects": self.consecutive_stitch_edge_defects,
             "total_distance_mm": current_total_distance,
-            "defects": defects
         }
 
         # ✅ Save latest measurable values for DB thread
@@ -756,17 +713,4 @@ class ImageProcessor:
             self.last_avg_stitch_edge_distance_mm = results_summary["avg_distance_mm"]
 
         self.last_processed_time = time.time()
-        return annotated, results_summary, defects, result
-
-    def process_defects(self, results, ts):
-        """Process defects and save images"""
-        annotated, summary, defects, result = results
-
-        defects_found = any(bool(v) for v in defects.values())
-        if defects_found:
-            print("Defects found - saving annotated image...")
-            out_path = os.path.join(config.OUTPUT_DIR, f"defect_{ts}.jpg")
-            cv2.imwrite(out_path, annotated)
-            print(f"📸 Saved defect image: {out_path}")
-
-        return defects_found
+        return annotated, results_summary, result
