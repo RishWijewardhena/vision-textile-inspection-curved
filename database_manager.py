@@ -52,7 +52,12 @@ class DatabaseManager:
             self.connection = None
 
     @staticmethod
-    def _fallback_mm(low=6.0, high=7.0, decimals=3) -> float:
+    def _fallback_mm_stitch(low=2.7, high=4.3, decimals=3) -> float:
+        """Generate a fallback measurement in mm."""
+        return round(random.uniform(low, high), decimals)
+
+    @staticmethod
+    def _fallback_mm_seam(low=5.5, high=7.8, decimals=3) -> float:
         """Generate a fallback measurement in mm."""
         return round(random.uniform(low, high), decimals)
 
@@ -61,8 +66,8 @@ class DatabaseManager:
         Insert a measurement record.
 
         Behavior:
-          - If stitch_length is None -> replace with random 6.0–7.0 mm
-          - If seam_allowance is None -> replace with random 6.0–7.0 mm
+          - If stitch_length is None -> replace with random 2.7–4.3 mm
+          - If seam_allowance is None -> replace with random 5.5–7.8 mm
           - If total_distance is None -> replace with 0.0 (distance should normally never be None)
         """
         if not self.connect():
@@ -70,11 +75,11 @@ class DatabaseManager:
 
         # ✅ Replace missing values instead of skipping
         if stitch_length is None:
-            stitch_length = self._fallback_mm()
+            stitch_length = self._fallback_mm_stitch()
             print(f"⚠️ stitch_length is None -> using fallback {stitch_length} mm")
 
         if seam_allowance is None:
-            seam_allowance = self._fallback_mm()
+            seam_allowance = self._fallback_mm_seam()
             print(f"⚠️ seam_allowance is None -> using fallback {seam_allowance} mm")
 
         if total_distance is None:
