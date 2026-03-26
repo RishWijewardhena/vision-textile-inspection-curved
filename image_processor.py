@@ -367,18 +367,19 @@ class ImageProcessor:
         frame = result.orig_img
         h, w = frame.shape[:2]
 
+        # Central region (25%-75%) in both axes.
+        # Define these upfront so they are always available, even when there are no detections.
+        roi_x1 = 0.25
+        roi_x2 = 0.75
+        roi_y1 = 0.25
+        roi_y2 = 0.75
+
         # 1. Collect stitch centers from YOLO/Object Detection boxes
         #    Only keep boxes inside the central ROI (middle 50% width, middle 50% height)
         if result.boxes is not None and len(result.boxes) > 0:
             boxes = result.boxes.xyxy.cpu().numpy()
             classes = result.boxes.cls.cpu().numpy()
             confidence = result.boxes.conf.cpu().numpy()
-
-            # Central region (25%–75%) in both axes
-            roi_x1 = 0.25
-            roi_x2 = 0.75
-            roi_y1 = 0.25
-            roi_y2 = 0.75
 
             for i, (x1, y1, x2, y2) in enumerate(boxes):
                 if confidence[i] >= 0.3 and int(classes[i]) == config.STITCH_CLASS_ID:
