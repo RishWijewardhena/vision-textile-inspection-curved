@@ -64,11 +64,6 @@ CAPTURE_INTERVAL = config['processing']['capture_interval']
 MIN_DISTANCE_CHANGE_MM = config['processing']['min_distance_change_mm']
 
 # ---------------------------
-# Consecutive Defect Tracking
-# ---------------------------
-CONSECUTIVE_DEFECT_THRESHOLD = config['defects']['consecutive_threshold']
-
-# ---------------------------
 # Offsets (from .env)
 # ---------------------------
 STITCH_LENGTH_OFFSET_MM = float(os.getenv("STITCH_LENGTH_OFFSET_MM", "2.0"))

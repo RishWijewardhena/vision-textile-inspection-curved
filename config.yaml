@@ -1,5 +1,5 @@
 gpu:
-  device: "cuda" # "cuda" or "cpu"
+  device: "cpu" # "cuda" or "cpu"
 
 serial:
   port: "/dev/ttyACM0"
@@ -28,14 +28,14 @@ defects:
   consecutive_threshold: 15
   min_stitch_edge_distance_mm: 5.5
   max_stitch_edge_distance_mm: 7.5
-  min_stitch_length_mm: 3.5
-  max_stitch_length_mm: 8.5
+  min_stitch_length_mm: 2.6
+  max_stitch_length_mm: 4.4
 
 ideal_ranges:
-  seam_allowance_mm_min: 6.0
-  seam_allowance_mm_max: 7.0
-  stitch_length_mm_min: 4.0
-  stitch_length_mm_max: 5.0
+  seam_allowance_mm_min: 5.0
+  seam_allowance_mm_max: 7.5
+  stitch_length_mm_min: 2.6
+  stitch_length_mm_max: 4.4
 
 units:
   mm_per_pixel: 0.1111
