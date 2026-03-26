@@ -45,13 +45,6 @@ class ImageProcessor:
         self.last_avg_stitch_length_mm = None
         self.last_avg_stitch_edge_distance_mm = None
 
-    def calculate_stitches_per_inch(self, avg_stitch_length_mm):
-        """Calculate how many stitches fit in one inch"""
-        if avg_stitch_length_mm is None or avg_stitch_length_mm <= 0:
-            return 0
-        one_inch_mm = 25.4
-        return one_inch_mm / avg_stitch_length_mm
-
     def get_perpendicular_distance_to_edges(self, centroid, mask):
         """Calculate perpendicular distances from a centroid to top and bottom mask edges"""
         binary_mask = mask.astype(np.uint8)
@@ -621,46 +614,27 @@ class ImageProcessor:
         stitch_count = len(dist_res['stitch_centers'])
         edge_count = len(dist_res['edge_centers'])
 
-        cv2.putText(annotated, f"Total Stitches: {stitch_count}", (10, 30),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2)
-        cv2.putText(annotated, f"Total Edges: {edge_count}", (10, 60),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 0), 2)
+        # Dynamic Y-positioning to avoid overlapping text
+        y_pos = 30
+        line_spacing = 25  # pixels between lines
 
-        cv2.putText(annotated, f"Total Distance: {current_total_distance:.1f}mm", (10, 90),
+        cv2.putText(annotated, f"Total Distance: {current_total_distance:.1f}mm", (10, y_pos),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 165, 0), 2)
+        y_pos += line_spacing
 
-        # Avg stitch length + stitches/inch
+        # Avg stitch length
         if coverage_info.get("avg_stitch_length_mm") is not None:
             avg_length = coverage_info["avg_stitch_length_mm"]
             cv2.putText(
                 annotated,
                 f"Avg Stitch Length: {avg_length:.2f}mm",
-                (10, 90),
+                (10, y_pos),
                 cv2.FONT_HERSHEY_SIMPLEX,
                 0.6,
                 (0, 255, 0),
                 2
             )
-            stitches_per_inch = self.calculate_stitches_per_inch(avg_length)
-            cv2.putText(
-                annotated,
-                f"Stitches/inch: {stitches_per_inch:.1f}",
-                (10, 110),
-                cv2.FONT_HERSHEY_SIMPLEX,
-                0.5,
-                (255, 255, 0),
-                1
-            )
-        else:
-            cv2.putText(
-                annotated,
-                "Stitch Length: Not measurable",
-                (10, 90),
-                cv2.FONT_HERSHEY_SIMPLEX,
-                0.6,
-                (0, 0, 255),
-                2
-            )
+            y_pos += line_spacing
 
         # Avg seam allowance (stitch-top edge dist)
         if coverage_info.get("has_distance_measurement") and coverage_info.get("avg_stitch_edge_distance_mm") is not None:
@@ -668,42 +642,18 @@ class ImageProcessor:
             cv2.putText(
                 annotated,
                 f"Avg Stitch-Top Edge Dist: {avg_dist:.2f}mm",
-                (10, 120),
+                (10, y_pos),
                 cv2.FONT_HERSHEY_SIMPLEX,
                 0.6,
                 (0, 255, 0),
                 2
             )
-        else:
-            cv2.putText(
-                annotated,
-                "Avg Stitch-Top Edge Dist: Not measurable",
-                (10, 120),
-                cv2.FONT_HERSHEY_SIMPLEX,
-                0.6,
-                (0, 0, 255),
-                2
-            )
-
-        vote_source = dist_res.get('vote_source', 'unknown')
-
-        cv2.putText(
-            annotated,
-            f"Edge vote: {vote_source}",
-            (10, 140),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            0.5,
-            (0, 215, 255),
-            1
-        )
 
         results_summary = {
             "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
             "edge_count": edge_count,
             "avg_distance_mm": coverage_info.get("avg_stitch_edge_distance_mm"),
             "avg_stitch_length_mm": coverage_info.get("avg_stitch_length_mm"),
-            "stitches_per_inch": self.calculate_stitches_per_inch(coverage_info.get("avg_stitch_length_mm", 0))
-            if coverage_info.get("avg_stitch_length_mm") else 0,
             "total_distance_mm": current_total_distance,
         }
 
