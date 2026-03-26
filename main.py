@@ -24,6 +24,9 @@ processing_lock = threading.Lock()
 last_capture_time = 0
 last_processed_distance = 0.0
 
+# Session folder for this run
+SESSION_FOLDER = None
+
 
 def sigint_handler(sig, frame):
     print('Interrupted - shutting down threads...')
@@ -36,7 +39,7 @@ def sigint_handler(sig, frame):
 signal.signal(signal.SIGINT, sigint_handler)
 
 
-def process_fabric_immediate(image_processor, camera_manager, serial_communicator, db_manager):
+def process_fabric_immediate(image_processor, camera_manager, serial_communicator, db_manager, session_output_dir):
     """
     Process fabric immediately when triggered and INSERT ONCE per processed frame.
     Also updates SerialCommunicator with the latest measured stitch length
@@ -71,7 +74,7 @@ def process_fabric_immediate(image_processor, camera_manager, serial_communicato
         if avg_len is not None and avg_len > 0:
             serial_communicator.last_avg_stitch_length_mm = float(avg_len)
 
-        out_path = os.path.join(config.OUTPUT_DIR, f"fabric_{ts}.jpg")
+        out_path = os.path.join(session_output_dir, f"fabric_{ts}.jpg")
         cv2.imwrite(out_path, annotated)
 
         print(f"📊 FABRIC ANALYSIS RESULTS ({summary['timestamp']}):")
@@ -146,7 +149,7 @@ def serial_monitor_thread(serial_communicator, image_processor, camera_manager, 
 
                 processing_thread = threading.Thread(
                     target=process_fabric_immediate,
-                    args=(image_processor, camera_manager, serial_communicator, db_manager),
+                    args=(image_processor, camera_manager, serial_communicator, db_manager, session_output_dir),
                     daemon=True
                 )
                 processing_thread.start()
@@ -170,6 +173,12 @@ def serial_monitor_thread(serial_communicator, image_processor, camera_manager, 
 
 def main():
     """Main function to start the system"""
+
+    # Create timestamped output folder for this session
+    session_timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    session_output_dir = os.path.join(config.OUTPUT_DIR, session_timestamp)
+    os.makedirs(session_output_dir, exist_ok=True)
+    print(f"📁 Session output directory: {session_output_dir}")
 
     # Initialize MQTT heartbeat
     heartbeat = None
