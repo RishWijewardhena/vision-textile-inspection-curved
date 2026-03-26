@@ -66,8 +66,8 @@ MIN_DISTANCE_CHANGE_MM = config['processing']['min_distance_change_mm']
 # ---------------------------
 # Offsets (from .env)
 # ---------------------------
-STITCH_LENGTH_OFFSET_MM = float(os.getenv("STITCH_LENGTH_OFFSET_MM", "2.0"))
-SEAM_ALLOWANCE_OFFSET_MM = float(os.getenv("SEAM_ALLOWANCE_OFFSET_MM", "4.0"))
+STITCH_LENGTH_OFFSET_MM = float(os.getenv("STITCH_LENGTH_OFFSET_MM", "0"))
+SEAM_ALLOWANCE_OFFSET_MM = float(os.getenv("SEAM_ALLOWANCE_OFFSET_MM", "1.0"))
 
 # ---------------------------
 # Ideal Ranges
