@@ -7,8 +7,8 @@ serial:
 
 camera:
   index: 0
-  width: 480
-  height: 640
+  width: 1280
+  height: 960
   calib_path: "camera_calibration.json"
   extr_path: "camera_extrinsics.json"
 
