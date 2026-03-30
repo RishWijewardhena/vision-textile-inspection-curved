@@ -3,7 +3,6 @@
 import mysql.connector
 from mysql.connector import Error
 from datetime import datetime
-import random
 import config
 
 
@@ -51,40 +50,22 @@ class DatabaseManager:
             self.cursor = None
             self.connection = None
 
-    @staticmethod
-    def _fallback_mm_stitch(low=2.7, high=4.3, decimals=3) -> float:
-        """Generate a fallback measurement in mm."""
-        return round(random.uniform(low, high), decimals)
-
-    @staticmethod
-    def _fallback_mm_seam(low=5.5, high=7.8, decimals=3) -> float:
-        """Generate a fallback measurement in mm."""
-        return round(random.uniform(low, high), decimals)
-
     def insert_measurement(self, stitch_length, seam_allowance, total_distance) -> bool:
         """
         Insert a measurement record.
 
         Behavior:
-          - If stitch_length is None -> replace with random 2.7–4.3 mm
-          - If seam_allowance is None -> replace with random 5.5–7.8 mm
-          - If total_distance is None -> replace with 0.0 (distance should normally never be None)
+          - Real-data only mode: skip insert when any required value is missing.
         """
         if not self.connect():
             return False
 
-        # ✅ Replace missing values instead of skipping
-        if stitch_length is None:
-            stitch_length = self._fallback_mm_stitch()
-            print(f"⚠️ stitch_length is None -> using fallback {stitch_length} mm")
-
-        if seam_allowance is None:
-            seam_allowance = self._fallback_mm_seam()
-            print(f"⚠️ seam_allowance is None -> using fallback {seam_allowance} mm")
-
-        if total_distance is None:
-            total_distance = 0.0
-            print("⚠️ total_distance is None -> using fallback 0.0 mm")
+        if stitch_length is None or seam_allowance is None or total_distance is None:
+            print(
+                "⚠️ Skipping DB insert: real measurement missing "
+                f"(stitch_length={stitch_length}, seam_allowance={seam_allowance}, total_distance={total_distance})"
+            )
+            return False
 
         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]  # millisecond precision
 
@@ -174,6 +155,48 @@ class DatabaseManager:
             print(f"❌ Failed to fetch last measurement date: {e}")
             return None
 
+    def get_last_total_distance(self):
+        """Get the total_distance of the last measurement in the database."""
+        if not self.connect():
+            return None
+
+        query = f"SELECT `total_distance` FROM `{self.db_table}` ORDER BY `timestamp` DESC LIMIT 1"
+        try:
+            self.cursor.execute(query)
+            result = self.cursor.fetchone()
+            if result:
+                return float(result[0])
+            else:
+                return 0.0
+        except Error as e:
+            print(f"❌ Failed to fetch last total distance: {e}")
+            return None
+
+    def get_recent_valid_measurements(self, limit=5):
+        """Get recent non-null positive stitch and seam values for fallback buffers."""
+        if not self.connect():
+            return []
+
+        query = f"""
+        SELECT `stitch_length`, `seam_allowance`
+        FROM `{self.db_table}`
+        WHERE `stitch_length` IS NOT NULL
+          AND `seam_allowance` IS NOT NULL
+          AND `stitch_length` > 0
+          AND `seam_allowance` > 0
+        ORDER BY `timestamp` DESC
+        LIMIT %s
+        """
+
+        try:
+            self.cursor.execute(query, (int(limit),))
+            rows = self.cursor.fetchall() or []
+            rows.reverse()  # Return oldest -> newest for smoother buffer stats
+            return [(float(r[0]), float(r[1])) for r in rows]
+        except Error as e:
+            print(f"❌ Failed to fetch recent valid measurements: {e}")
+            return []
+
 
 if __name__ == "__main__":
     # Example usage
@@ -181,3 +204,5 @@ if __name__ == "__main__":
         db.reset_total_distance_on_startup()
         last_date = db.get_last_measurement_date()
         print(f"Last measurement date: {last_date}")
+        last_total_distance = db.get_last_total_distance()
+        print(f"Last total distance: {last_total_distance}")
