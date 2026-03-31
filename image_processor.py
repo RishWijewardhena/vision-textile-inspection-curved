@@ -5,7 +5,6 @@ import numpy as np
 import time
 from datetime import datetime
 import os
-import random
 
 import config
 from calibration import get_mm_per_pixel
@@ -221,10 +220,6 @@ class ImageProcessor:
 
         avg_distance_mm = total_distance_mm / valid_distance_count if valid_distance_count > 0 else None
 
-        # If you want to avoid fake data, REMOVE this fallback block.
-        if avg_distance_mm is None and len(stitch_centers) > 0:
-            avg_distance_mm = round(np.random.uniform(6.0, 7.0), 2)
-            print(f"[INFO] No edge measurements possible, using estimated average: {avg_distance_mm}mm")
 
         return {
             'stitch_centers': stitch_centers,
