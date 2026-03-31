@@ -6,6 +6,7 @@ import signal
 import sys
 import threading
 from datetime import datetime
+from collections import deque
 
 from ultralytics import YOLO
 import cv2
@@ -24,22 +25,32 @@ processing_lock = threading.Lock()
 last_capture_time = 0
 last_processed_distance = 0.0
 
+# Keep the last 5 valid measurements for real-data fallback (no random values).
+stitch_length_buffer = deque(maxlen=5)
+seam_allowance_buffer = deque(maxlen=5)
+
 # Session folder for this run
 SESSION_FOLDER = None
 
 
 def sigint_handler(sig, frame):
     print('Interrupted - shutting down threads...')
-    
+
+    # Trigger graceful shutdown; let main loop close resources in order.
     shutdown_event.set()
-    time.sleep(1)
-    sys.exit(0)
 
 
 signal.signal(signal.SIGINT, sigint_handler)
 
 
-def process_fabric_immediate(image_processor, camera_manager, serial_communicator, db_manager, session_output_dir):
+def process_fabric_immediate(
+    image_processor,
+    camera_manager,
+    serial_communicator,
+    db_manager,
+    session_output_dir,
+    delta_stitches,
+):
     """
     Process fabric immediately when triggered and INSERT ONCE per processed frame.
     Also updates SerialCommunicator with the latest measured stitch length
@@ -98,6 +109,28 @@ def process_fabric_immediate(image_processor, camera_manager, serial_communicato
         seam_allowance = summary.get("avg_distance_mm")              # avg_dist -> seam_allowance
         total_distance = serial_communicator.current_total_distance  # total_distance
 
+        # Keep a rolling buffer of valid real measurements.
+        if stitch_length is not None and stitch_length > 0:
+            stitch_length_buffer.append(float(stitch_length))
+        if seam_allowance is not None and seam_allowance > 0:
+            seam_allowance_buffer.append(float(seam_allowance))
+
+        # If we moved forward (delta>0) but this frame missed a measurement,
+        # fall back to mean of recent valid real measurements.
+        if delta_stitches > 0:
+            if stitch_length is None and stitch_length_buffer:
+                stitch_length = sum(stitch_length_buffer) / len(stitch_length_buffer)
+                print(
+                    f"ℹ️ Using buffered stitch_length mean: {stitch_length:.3f}mm "
+                    f"from {len(stitch_length_buffer)} samples"
+                )
+
+            if seam_allowance is None and seam_allowance_buffer:
+                seam_allowance = sum(seam_allowance_buffer) / len(seam_allowance_buffer)
+                print(
+                    f"ℹ️ Using buffered seam_allowance mean: {seam_allowance:.3f}mm "
+                    f"from {len(seam_allowance_buffer)} samples"
+                )
 
 
         ok = db_manager.insert_measurement(
@@ -131,24 +164,72 @@ def serial_monitor_thread(serial_communicator, image_processor, camera_manager, 
 
     print("[INFO] Serial monitor thread started, reading distance data...")
 
+    previous_stitch_count = serial_communicator.read_serial_data()
+    waiting_log_last_time = 0.0
+    bootstrap_done = False
+
     while not shutdown_event.is_set():
         try:
-            serial_communicator.read_serial_data()
+            if previous_stitch_count is None:
+                now = time.time()
+                if now - waiting_log_last_time >= 2.0:
+                    print("[INFO] Waiting for first serial stitch count...")
+                    waiting_log_last_time = now
+
+                # Run one bootstrap frame so AI can provide initial real measurements
+                # even before serial starts streaming counts.
+                if not bootstrap_done and now - last_capture_time >= config.CAPTURE_INTERVAL:
+                    print("[INFO] Running bootstrap processing while waiting for serial data...")
+                    processing_thread = threading.Thread(
+                        target=process_fabric_immediate,
+                        args=(
+                            image_processor,
+                            camera_manager,
+                            serial_communicator,
+                            db_manager,
+                            session_output_dir,
+                            0,
+                        ),
+                        daemon=True,
+                    )
+                    processing_thread.start()
+                    bootstrap_done = True
+
+                previous_stitch_count = serial_communicator.read_serial_data()
+                time.sleep(0.1)
+                continue
+
+            last_stitch_count = serial_communicator.read_serial_data()
+            if last_stitch_count is None:
+                time.sleep(0.01)
+                continue
+
+            delta = last_stitch_count - previous_stitch_count
+            previous_stitch_count = last_stitch_count
+
+            # Update total distance based on the latest stitch count and AI stitch length
+            if delta >= 0:  # Only update if stitch count has increased
+                serial_communicator.update_distance_from_stitch_count(delta)
+
             current_time = time.time()
 
-            if (
-                current_time - last_capture_time >= config.CAPTURE_INTERVAL and
-                abs(serial_communicator.current_total_distance - last_processed_distance) >= config.MIN_DISTANCE_CHANGE_MM
-            ):
+            if current_time - last_capture_time >= config.CAPTURE_INTERVAL:
                 print(
                     f"\n=== FABRIC PROCESSING TRIGGERED "
                     f"(Distance: {serial_communicator.current_total_distance:.2f}mm, "
-                    f"Change: {abs(serial_communicator.current_total_distance - last_processed_distance):.2f}mm) ==="
+                    f"Interval: {config.CAPTURE_INTERVAL:.2f}s) ==="
                 )
 
                 processing_thread = threading.Thread(
                     target=process_fabric_immediate,
-                    args=(image_processor, camera_manager, serial_communicator, db_manager, session_output_dir),
+                    args=(
+                        image_processor,
+                        camera_manager,
+                        serial_communicator,
+                        db_manager,
+                        session_output_dir,
+                        delta,
+                    ),
                     daemon=True
                 )
                 processing_thread.start()
@@ -199,8 +280,8 @@ def main():
     print("🚀 STARTING OPTIMIZED FABRIC INSPECTION SYSTEM")
     print("=" * 50)
     print("System Architecture:")
-    print("  • Arduino: Motor control + distance data")
-    print("  • MySQL: Insert ON EVERY processed frame (no periodic inserts)")
+    print("  • Esp32 with rotary encoder sends stitch count to PC via serial")
+    print("  • MySQL: Insert ON EVERY processed frame in 2 seconds ")
     print("  • Image Cleanup: Deletes images older than 24 hours")
     print("=" * 50)
     print(f"Data will be inserted into MySQL at {config.DB_CONFIG['host']}/{config.DB_CONFIG['database']}")
@@ -220,6 +301,7 @@ def main():
 
     image_processor = ImageProcessor(model)
     db_manager = DatabaseManager()
+    # Initialize SerialCommunicator with the current total distance from DB (or 0.0 if not available)        
     serial_communicator = SerialCommunicator()
 
     #reset the total distnace to 0 on startup to avoid false triggers
@@ -245,7 +327,26 @@ def main():
             
         else:
             print("✅ Total distance reset not needed on startup")
-            
+
+        # retrieving the last total distance from the database to initialize counting session with the correct value
+        last_total_distance = db_manager.get_last_total_distance()
+        if last_total_distance is not None:
+            serial_communicator.current_total_distance = last_total_distance
+            print(f"🔄 Initialized total distance from DB: {last_total_distance:.2f}mm")
+
+        # Seed fallback buffers with recent real measurements from DB.
+        recent_real = db_manager.get_recent_valid_measurements(limit=5)
+        for stitch_val, seam_val in recent_real:
+            stitch_length_buffer.append(stitch_val)
+            seam_allowance_buffer.append(seam_val)
+        if recent_real:
+            print(
+                f"🔄 Seeded measurement buffers from DB: {len(recent_real)} samples "
+                f"(stitch mean {sum(stitch_length_buffer)/len(stitch_length_buffer):.3f}mm, "
+                f"seam mean {sum(seam_allowance_buffer)/len(seam_allowance_buffer):.3f}mm)"
+            )
+
+
 
     threads = []
 
