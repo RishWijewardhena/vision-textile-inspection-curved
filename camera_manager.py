@@ -2,6 +2,7 @@
 import cv2
 import time
 import config
+from utils.resource_discovery import find_camera
 
 class CameraManager:
     def __init__(self):
@@ -13,23 +14,48 @@ class CameraManager:
         :raises: Exception
         """
         self.cap = None
+        self.camera_idx = config.CAMERA_IDX
         self.init_camera()
 
     def init_camera(self):
         """Initialize camera with proper error handling"""
+        preferred_cam = self.camera_idx
+        discovered_cam = find_camera()
+        candidates = [preferred_cam]
+        if discovered_cam and discovered_cam not in candidates:
+            candidates.append(discovered_cam)
+
+        last_error = None
+
+        for cam_idx in candidates:
+            try:
+                cap = cv2.VideoCapture(cam_idx)
+                if not cap.isOpened():
+                    raise Exception(f"Cannot open camera {cam_idx}")
+
+                cap.set(cv2.CAP_PROP_FRAME_WIDTH, config.FRAME_W)
+                cap.set(cv2.CAP_PROP_FRAME_HEIGHT, config.FRAME_H)
+                cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+
+                ret, _ = cap.read()
+                if not ret:
+                    cap.release()
+                    raise Exception(f"Camera opened but cannot capture frames ({cam_idx})")
+
+                self.cap = cap
+                self.camera_idx = cam_idx
+                print(f"✅ Camera initialized on {cam_idx} at {config.FRAME_W}x{config.FRAME_H}")
+                return True
+            except Exception as e:
+                last_error = e
+                print(f"⚠️ Camera init attempt failed on {cam_idx}: {e}")
+
         try:
-            self.cap = cv2.VideoCapture(config.CAMERA_IDX)
-            if not self.cap.isOpened():
-                raise Exception(f"Cannot open camera {config.CAMERA_IDX}")
-            self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, config.FRAME_W)
-            self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, config.FRAME_H)
-            self.cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
-            ret, _ = self.cap.read()
-            if not ret:
-                raise Exception("Camera opened but cannot capture frames")
-            print(f"✅ Camera initialized at {config.FRAME_W}x{config.FRAME_H}")
-            return True
+            self.cap = None
+            print(f"❌ Camera initialization failed: {last_error}")
+            return False
         except Exception as e:
+            self.cap = None
             print(f"❌ Camera initialization failed: {e}")
             return False
 
@@ -66,6 +92,7 @@ class CameraManager:
         try:
             if self.cap is not None:
                 self.cap.release()
+                self.cap = None
             time.sleep(1)
             return self.init_camera()
         except Exception as e:
