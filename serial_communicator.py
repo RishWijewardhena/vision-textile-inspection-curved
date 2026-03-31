@@ -2,25 +2,24 @@
 
 import serial
 import config
-import random
 import time
+from typing import Optional
 
 
 class SerialCommunicator:
-    def __init__(self):
+    def __init__(self,current_total_distance: float = 0.0):
         """
         Initializes the SerialCommunicator object.
 
         Opens the serial port specified by config.SERIAL_PORT at the baud rate
         specified by config.BAUDRATE.
+        If no value is passed, it will automatically use 0.0.
         """
         self.serial_port = None
 
         # Last known AI stitch length (mm). 0.0 means "not available yet".
         self.last_avg_stitch_length_mm = 0.0
-
-        # Running total distance (mm)
-        self.current_total_distance = 0.0
+        self.current_total_distance = current_total_distance
 
         # Anti-spam controls
         self._last_fallback_print_time = 0.0
@@ -33,39 +32,29 @@ class SerialCommunicator:
             print(f"[ERROR] Could not open serial port: {e}")
             self.serial_port = None
 
-    @staticmethod
-    def _fallback_stitch_length_mm() -> float:
-        """Fallback stitch length when AI value is not yet available."""
-        return round(random.uniform(6.0, 7.0), 3)
+    def update_distance_from_stitch_count(self, data_line: int) -> bool:
+        """Update total distance using stitch delta (increment), not absolute count."""
 
-    def update_distance_from_stitch_count(self, data_line: str) -> bool:
-        """Parse stitch count from Arduino and calculate total distance."""
         try:
-            stitch_count = int(data_line.strip())
-
+            delta = int(data_line)
             avg_len = self.last_avg_stitch_length_mm
-            used_fallback = False
 
             if avg_len is None or avg_len <= 0:
-                avg_len = self._fallback_stitch_length_mm()
-                used_fallback = True
-
                 now = time.time()
                 if now - self._last_fallback_print_time >= self._fallback_print_interval_sec:
                     print(
-                        f"⚠️ Avg stitch length not available yet -> using fallback {avg_len:.3f}mm "
-                        f"(Stitch count: {stitch_count})"
+                        "⚠️ Avg stitch length not available yet; skipping distance update "
+                        "(no fake data)."
                     )
                     self._last_fallback_print_time = now
+                return False
 
-            self.current_total_distance = stitch_count * avg_len
+            self.current_total_distance += delta * avg_len
 
-            # Optional: reduce spam by printing only when not fallback or occasionally
-            if not used_fallback:
-                print(
-                    f"📏 Updated total distance: {self.current_total_distance:.2f}mm "
-                    f"(Stitches: {stitch_count}, Avg Length: {avg_len:.2f}mm)"
-                )
+            print(
+                f"📏 Updated total distance: {self.current_total_distance:.2f}mm "
+                f"(Delta: {delta}, Avg Length: {avg_len:.2f}mm)"
+            )
 
             return True
 
@@ -94,11 +83,14 @@ class SerialCommunicator:
                     line, self._buffer = self._buffer.split("\n", 1)
                     line = line.strip()
                     if line:
-                        self.update_distance_from_stitch_count(line)
+                        # self.update_distance_from_stitch_count(line)
+                        last_stich_count = int(line)
+                        return last_stich_count
 
             except Exception as e:
                 print(f"Warning: Serial read/decode error: {e}")
                 self._buffer = ""
+        return None
 
     def close(self):
         if self.serial_port is not None:
