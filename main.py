@@ -33,6 +33,20 @@ seam_allowance_buffer = deque(maxlen=5)
 SESSION_FOLDER = None
 
 
+def is_stitch_length_in_ideal_range(value_mm):
+    """Return True when stitch length is inside configured ideal limits."""
+    if value_mm is None:
+        return False
+    return config.IDEAL_STITCH_LENGTH_MM_MIN <= value_mm <= config.IDEAL_STITCH_LENGTH_MM_MAX
+
+
+def is_seam_allowance_in_ideal_range(value_mm):
+    """Return True when seam allowance is inside configured ideal limits."""
+    if value_mm is None:
+        return False
+    return config.IDEAL_SEAM_ALLOWANCE_MM_MIN <= value_mm <= config.IDEAL_SEAM_ALLOWANCE_MM_MAX
+
+
 def sigint_handler(sig, frame):
     print('Interrupted - shutting down threads...')
 
@@ -82,7 +96,7 @@ def process_fabric_immediate(
 
         # ✅ Update serial distance model with latest measured stitch length (ONLY if valid)
         avg_len = summary.get("avg_stitch_length_mm")
-        if avg_len is not None and avg_len > 0:
+        if is_stitch_length_in_ideal_range(avg_len):
             serial_communicator.last_avg_stitch_length_mm = float(avg_len)
 
         out_path = os.path.join(session_output_dir, f"fabric_{ts}.jpg")
@@ -110,9 +124,9 @@ def process_fabric_immediate(
         total_distance = serial_communicator.current_total_distance  # total_distance
 
         # Keep a rolling buffer of valid real measurements.
-        if stitch_length is not None and stitch_length > 0:
+        if is_stitch_length_in_ideal_range(stitch_length):
             stitch_length_buffer.append(float(stitch_length))
-        if seam_allowance is not None and seam_allowance > 0:
+        if is_seam_allowance_in_ideal_range(seam_allowance):
             seam_allowance_buffer.append(float(seam_allowance))
 
         # If we moved forward (delta>0) but this frame missed a measurement,
@@ -131,6 +145,25 @@ def process_fabric_immediate(
                     f"ℹ️ Using buffered seam_allowance mean: {seam_allowance:.3f}mm "
                     f"from {len(seam_allowance_buffer)} samples"
                 )
+
+        # Final safety filter before persistence.
+        if stitch_length is not None and not is_stitch_length_in_ideal_range(stitch_length):
+            print(
+                "⚠️ Ignoring out-of-range stitch_length before DB insert: "
+                f"{stitch_length:.3f}mm "
+                f"(allowed {config.IDEAL_STITCH_LENGTH_MM_MIN:.3f}-"
+                f"{config.IDEAL_STITCH_LENGTH_MM_MAX:.3f}mm)"
+            )
+            stitch_length = None
+
+        if seam_allowance is not None and not is_seam_allowance_in_ideal_range(seam_allowance):
+            print(
+                "⚠️ Ignoring out-of-range seam_allowance before DB insert: "
+                f"{seam_allowance:.3f}mm "
+                f"(allowed {config.IDEAL_SEAM_ALLOWANCE_MM_MIN:.3f}-"
+                f"{config.IDEAL_SEAM_ALLOWANCE_MM_MAX:.3f}mm)"
+            )
+            seam_allowance = None
 
 
         ok = db_manager.insert_measurement(
@@ -318,8 +351,10 @@ def main():
         # Seed fallback buffers with recent real measurements from DB.
         recent_real = db_manager.get_recent_valid_measurements(limit=5)
         for stitch_val, seam_val in recent_real:
-            stitch_length_buffer.append(stitch_val)
-            seam_allowance_buffer.append(seam_val)
+            if is_stitch_length_in_ideal_range(stitch_val):
+                stitch_length_buffer.append(stitch_val)
+            if is_seam_allowance_in_ideal_range(seam_val):
+                seam_allowance_buffer.append(seam_val)
         if recent_real:
             print(
                 f"🔄 Seeded measurement buffers from DB: {len(recent_real)} samples "
