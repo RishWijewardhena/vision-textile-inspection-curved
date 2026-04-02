@@ -6,7 +6,7 @@ serial:
   baudrate: 115200
 
 camera:
-  index: 0
+  index: "/dev/video0"
   width: 1280
   height: 960
   calib_path: "camera_calibration.json"
