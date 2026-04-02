@@ -165,51 +165,31 @@ def serial_monitor_thread(serial_communicator, image_processor, camera_manager, 
     print("[INFO] Serial monitor thread started, reading distance data...")
 
     previous_stitch_count = serial_communicator.read_serial_data()
+    pending_delta_stitches = 0
     waiting_log_last_time = 0.0
-    bootstrap_done = False
 
     while not shutdown_event.is_set():
         try:
+            last_stitch_count = serial_communicator.read_serial_data()
             if previous_stitch_count is None:
                 now = time.time()
                 if now - waiting_log_last_time >= 2.0:
                     print("[INFO] Waiting for first serial stitch count...")
                     waiting_log_last_time = now
 
-                # Run one bootstrap frame so AI can provide initial real measurements
-                # even before serial starts streaming counts.
-                if not bootstrap_done and now - last_capture_time >= config.CAPTURE_INTERVAL:
-                    print("[INFO] Running bootstrap processing while waiting for serial data...")
-                    processing_thread = threading.Thread(
-                        target=process_fabric_immediate,
-                        args=(
-                            image_processor,
-                            camera_manager,
-                            serial_communicator,
-                            db_manager,
-                            session_output_dir,
-                            0,
-                        ),
-                        daemon=True,
-                    )
-                    processing_thread.start()
-                    bootstrap_done = True
+                if last_stitch_count is not None:
+                    previous_stitch_count = last_stitch_count
+                    print(f"[INFO] First serial stitch count received: {previous_stitch_count}")
+            elif last_stitch_count is not None:
+                delta = last_stitch_count - previous_stitch_count
+                previous_stitch_count = last_stitch_count
 
-                previous_stitch_count = serial_communicator.read_serial_data()
-                time.sleep(0.1)
-                continue
-
-            last_stitch_count = serial_communicator.read_serial_data()
-            if last_stitch_count is None:
-                time.sleep(0.01)
-                continue
-
-            delta = last_stitch_count - previous_stitch_count
-            previous_stitch_count = last_stitch_count
-
-            # Update total distance based on the latest stitch count and AI stitch length
-            if delta >= 0:  # Only update if stitch count has increased
-                serial_communicator.update_distance_from_stitch_count(delta)
+                # Update total distance based on the latest stitch count and AI stitch length
+                if delta >= 0:
+                    pending_delta_stitches += delta
+                    serial_communicator.update_distance_from_stitch_count(delta)
+                else:
+                    print(f"[WARN] Stitch count decreased ({delta}); ignoring this sample")
 
             current_time = time.time()
 
@@ -228,7 +208,7 @@ def serial_monitor_thread(serial_communicator, image_processor, camera_manager, 
                         serial_communicator,
                         db_manager,
                         session_output_dir,
-                        delta,
+                        pending_delta_stitches,
                     ),
                     daemon=True
                 )
@@ -236,6 +216,7 @@ def serial_monitor_thread(serial_communicator, image_processor, camera_manager, 
 
                 last_capture_time = current_time
                 last_processed_distance = serial_communicator.current_total_distance
+                pending_delta_stitches = 0
 
             # If this log is too noisy, you can comment it out
             # else:
@@ -244,7 +225,7 @@ def serial_monitor_thread(serial_communicator, image_processor, camera_manager, 
             #         f"Distance change: {abs(serial_communicator.current_total_distance - last_processed_distance):.2f}mm"
             #     )
 
-            time.sleep(0.005)
+            time.sleep(0.01)
 
         except Exception as e:
             print(f"[ERROR] Serial monitor thread: {e}")
