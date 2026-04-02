@@ -44,6 +44,18 @@ class ImageProcessor:
         self.last_avg_stitch_length_mm = None
         self.last_avg_stitch_edge_distance_mm = None
 
+    def _is_stitch_length_in_ideal_range(self, value_mm):
+        """Return True when stitch length is inside configured ideal limits."""
+        if value_mm is None:
+            return False
+        return config.IDEAL_STITCH_LENGTH_MM_MIN <= value_mm <= config.IDEAL_STITCH_LENGTH_MM_MAX
+
+    def _is_seam_allowance_in_ideal_range(self, value_mm):
+        """Return True when seam allowance is inside configured ideal limits."""
+        if value_mm is None:
+            return False
+        return config.IDEAL_SEAM_ALLOWANCE_MM_MIN <= value_mm <= config.IDEAL_SEAM_ALLOWANCE_MM_MAX
+
     def get_perpendicular_distance_to_edges(self, centroid, mask):
         """Calculate perpendicular distances from a centroid to top and bottom mask edges"""
         binary_mask = mask.astype(np.uint8)
@@ -509,12 +521,27 @@ class ImageProcessor:
         Calculate stitch measurements from predictions.
         """
         coverage_info = {}
-        coverage_info["avg_stitch_edge_distance_mm"] = distance_results.get('avg_distance_mm')
-        has_distance_measurements = coverage_info["avg_stitch_edge_distance_mm"] is not None
-        coverage_info["has_distance_measurement"] = has_distance_measurements
+        raw_seam_allowance_mm = distance_results.get('avg_distance_mm')
+        if raw_seam_allowance_mm is not None:
+            adjusted_seam_allowance_mm = raw_seam_allowance_mm + config.SEAM_ALLOWANCE_OFFSET_MM
+            if self._is_seam_allowance_in_ideal_range(adjusted_seam_allowance_mm):
+                coverage_info["avg_stitch_edge_distance_mm"] = adjusted_seam_allowance_mm
+            else:
+                coverage_info["avg_stitch_edge_distance_mm"] = None
+                print(
+                    "[INFO] Ignoring seam allowance outside ideal range: "
+                    f"{adjusted_seam_allowance_mm:.3f}mm "
+                    f"(allowed {config.IDEAL_SEAM_ALLOWANCE_MM_MIN:.3f}-"
+                    f"{config.IDEAL_SEAM_ALLOWANCE_MM_MAX:.3f}mm)"
+                )
+        else:
+            coverage_info["avg_stitch_edge_distance_mm"] = None
+
+        coverage_info["has_distance_measurement"] = coverage_info["avg_stitch_edge_distance_mm"] is not None
 
         # Process stitch lengths from predictions
         stitch_lengths = []
+        valid_stitch_lengths_mm = []
         if predictions is not None and len(predictions) > 0:
             for x1, y1, x2, y2, conf, cls in predictions:
                 if int(cls) == config.STITCH_CLASS_ID and conf >= 0.3:
@@ -522,6 +549,17 @@ class ImageProcessor:
                     height = y2 - y1
                     stitch_length_pixels = max(width, height)
                     stitch_length_mm = stitch_length_pixels * self.mm_per_pixel
+                    adjusted_stitch_length_mm = stitch_length_mm + config.STITCH_LENGTH_OFFSET_MM
+
+                    if self._is_stitch_length_in_ideal_range(adjusted_stitch_length_mm):
+                        valid_stitch_lengths_mm.append(adjusted_stitch_length_mm)
+                    else:
+                        print(
+                            "[INFO] Ignoring stitch length outside ideal range: "
+                            f"{adjusted_stitch_length_mm:.3f}mm "
+                            f"(allowed {config.IDEAL_STITCH_LENGTH_MM_MIN:.3f}-"
+                            f"{config.IDEAL_STITCH_LENGTH_MM_MAX:.3f}mm)"
+                        )
 
                     stitch_lengths.append({
                         'box': (x1, y1, x2, y2),
@@ -531,15 +569,9 @@ class ImageProcessor:
                     })
 
         coverage_info["avg_stitch_length_mm"] = (
-            sum(s['length_mm'] for s in stitch_lengths) / len(stitch_lengths)
-            if stitch_lengths else None
+            sum(valid_stitch_lengths_mm) / len(valid_stitch_lengths_mm)
+            if valid_stitch_lengths_mm else None
         )
-
-        # Apply offsets
-        if coverage_info["avg_stitch_length_mm"] is not None:
-            coverage_info["avg_stitch_length_mm"] += config.STITCH_LENGTH_OFFSET_MM
-        if coverage_info["avg_stitch_edge_distance_mm"] is not None:
-            coverage_info["avg_stitch_edge_distance_mm"] += config.SEAM_ALLOWANCE_OFFSET_MM
 
         coverage_info["stitch_lengths"] = stitch_lengths
         return coverage_info
@@ -570,12 +602,6 @@ class ImageProcessor:
         dist_res = self.calculate_stitch_edge_distances_vote(result)
 
         coverage_info = self.calculate_measurements(preds, dist_res)
-
-        # If we couldn't measure seam allowance this frame, reuse the last known good value.
-        # This prevents repeated "Not measurable" results when edge detection is temporarily unreliable.
-        if coverage_info.get("avg_stitch_edge_distance_mm") is None and self.last_avg_stitch_edge_distance_mm is not None:
-            coverage_info["avg_stitch_edge_distance_mm"] = self.last_avg_stitch_edge_distance_mm
-            print("[INFO] No seam allowance calculable this frame — reusing last measured value.")
 
         # Draw without YOLO segmentation masks (so we can overlay our Canny-based edge)
         annotated = result.plot(masks=False)
