@@ -4,6 +4,7 @@ import serial
 import config
 import time
 from typing import Optional
+from utils.resource_discovery import find_esp32
 
 
 class SerialCommunicator:
@@ -24,13 +25,38 @@ class SerialCommunicator:
         # Anti-spam controls
         self._last_fallback_print_time = 0.0
         self._fallback_print_interval_sec = 2.0  # print fallback warning at most once per 2s
+        self._last_reconnect_attempt = 0.0
+        self._reconnect_interval_sec = 2.0
 
-        try:
-            self.serial_port = serial.Serial(config.SERIAL_PORT, config.BAUDRATE, timeout=0.1)
-            print(f"[INFO] Opened serial port {config.SERIAL_PORT} at {config.BAUDRATE} baud")
-        except Exception as e:
-            print(f"[ERROR] Could not open serial port: {e}")
-            self.serial_port = None
+        self._open_serial_port()
+
+    def _open_serial_port(self) -> bool:
+        """Open configured serial port, then fall back to discovered ESP32 port."""
+        discovered_port = find_esp32()
+        candidate_ports = [config.SERIAL_PORT]
+        if discovered_port and discovered_port not in candidate_ports:
+            candidate_ports.append(discovered_port)
+
+        for port in candidate_ports:
+            try:
+                self.serial_port = serial.Serial(port, config.BAUDRATE, timeout=0.1)
+                print(f"[INFO] Opened serial port {port} at {config.BAUDRATE} baud")
+                return True
+            except Exception as exc:
+                print(f"[WARN] Could not open serial port {port}: {exc}")
+
+        self.serial_port = None
+        print("[ERROR] Serial port unavailable after configured + auto-discovery attempts")
+        return False
+
+    def _try_reconnect(self):
+        """Attempt reconnect with rate limiting to avoid busy-loop retries."""
+        now = time.time()
+        if now - self._last_reconnect_attempt < self._reconnect_interval_sec:
+            return
+        self._last_reconnect_attempt = now
+        print("[INFO] Serial port not available, trying reconnect...")
+        self._open_serial_port()
 
     def update_distance_from_stitch_count(self, data_line: int) -> bool:
         """Update total distance using stitch delta (increment), not absolute count."""
@@ -68,6 +94,7 @@ class SerialCommunicator:
     def read_serial_data(self):
         """Read data from the serial port and update the distance."""
         if not self.serial_port:
+            self._try_reconnect()
             return
 
         # IMPORTANT: keep buffer across calls, otherwise partial lines can be lost
@@ -83,13 +110,22 @@ class SerialCommunicator:
                     line, self._buffer = self._buffer.split("\n", 1)
                     line = line.strip()
                     if line:
-                        # self.update_distance_from_stitch_count(line)
-                        last_stich_count = int(line)
-                        return last_stich_count
+                        try:
+                            last_stich_count = int(line)
+                            return last_stich_count
+                        except ValueError:
+                            print(f"[WARN] Non-integer serial line ignored: {line}")
+                            continue
 
             except Exception as e:
                 print(f"Warning: Serial read/decode error: {e}")
+                try:
+                    self.serial_port.close()
+                except Exception:
+                    pass
+                self.serial_port = None
                 self._buffer = ""
+                self._try_reconnect()
         return None
 
     def close(self):
