@@ -50,6 +50,18 @@ class DatabaseManager:
             self.cursor = None
             self.connection = None
 
+    @staticmethod
+    def _is_stitch_length_in_ideal_range(value_mm) -> bool:
+        if value_mm is None:
+            return False
+        return config.IDEAL_STITCH_LENGTH_MM_MIN <= value_mm <= config.IDEAL_STITCH_LENGTH_MM_MAX
+
+    @staticmethod
+    def _is_seam_allowance_in_ideal_range(value_mm) -> bool:
+        if value_mm is None:
+            return False
+        return config.IDEAL_SEAM_ALLOWANCE_MM_MIN <= value_mm <= config.IDEAL_SEAM_ALLOWANCE_MM_MAX
+
     def insert_measurement(self, stitch_length, seam_allowance, total_distance) -> bool:
         """
         Insert a measurement record.
@@ -64,6 +76,22 @@ class DatabaseManager:
             print(
                 "⚠️ Skipping DB insert: real measurement missing "
                 f"(stitch_length={stitch_length}, seam_allowance={seam_allowance}, total_distance={total_distance})"
+            )
+            return False
+
+        if not self._is_stitch_length_in_ideal_range(float(stitch_length)):
+            print(
+                "⚠️ Skipping DB insert: stitch_length outside ideal range "
+                f"({float(stitch_length):.3f}mm, allowed {config.IDEAL_STITCH_LENGTH_MM_MIN:.3f}-"
+                f"{config.IDEAL_STITCH_LENGTH_MM_MAX:.3f}mm)"
+            )
+            return False
+
+        if not self._is_seam_allowance_in_ideal_range(float(seam_allowance)):
+            print(
+                "⚠️ Skipping DB insert: seam_allowance outside ideal range "
+                f"({float(seam_allowance):.3f}mm, allowed {config.IDEAL_SEAM_ALLOWANCE_MM_MIN:.3f}-"
+                f"{config.IDEAL_SEAM_ALLOWANCE_MM_MAX:.3f}mm)"
             )
             return False
 
@@ -184,6 +212,8 @@ class DatabaseManager:
           AND `seam_allowance` IS NOT NULL
           AND `stitch_length` > 0
           AND `seam_allowance` > 0
+                    AND `stitch_length` BETWEEN {config.IDEAL_STITCH_LENGTH_MM_MIN} AND {config.IDEAL_STITCH_LENGTH_MM_MAX}
+                    AND `seam_allowance` BETWEEN {config.IDEAL_SEAM_ALLOWANCE_MM_MIN} AND {config.IDEAL_SEAM_ALLOWANCE_MM_MAX}
         ORDER BY `timestamp` DESC
         LIMIT %s
         """
