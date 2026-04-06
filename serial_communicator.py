@@ -135,3 +135,16 @@ class SerialCommunicator:
             except Exception:
                 pass
             print("✅ Serial port closed")
+
+if __name__ == "__main__":
+    communicator = SerialCommunicator()
+    try:
+        while True:
+            stitch_count = communicator.read_serial_data()
+            if stitch_count is not None:
+                print(f"Received stitch count: {stitch_count}")
+            time.sleep(0.1)
+    except KeyboardInterrupt:
+        print("Exiting...")
+    finally:
+        communicator.close()
