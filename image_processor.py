@@ -580,7 +580,8 @@ class ImageProcessor:
         """Process a single frame and return results"""
         frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
 
-        results = self.model(frame_rgb, device=config.DEVICE)
+        # Keep inference silent to avoid per-frame speed/no-detection console spam.
+        results = self.model(frame_rgb, device=config.DEVICE, verbose=False)
         result = results[0]
 
         # Build predictions array: [x1,y1,x2,y2,conf,cls]
