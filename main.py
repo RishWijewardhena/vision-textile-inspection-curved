@@ -177,8 +177,6 @@ def process_fabric_immediate(
         else:
             print("❌ MySQL insert failed (per-frame)")
 
-        print(f"⚡ ANALYSIS COMPLETE: {processing_time:.2f}s total")
-
     except Exception as e:
         print(f"❌ ERROR in fabric processing: {e}")
 
@@ -251,12 +249,6 @@ def serial_monitor_thread(serial_communicator, image_processor, camera_manager, 
                 last_processed_distance = serial_communicator.current_total_distance
                 pending_delta_stitches = 0
 
-            # If this log is too noisy, you can comment it out
-            # else:
-            #     print(
-            #         f"⚠️ Skipping capture: Time since last capture: {current_time - last_capture_time:.2f}s, "
-            #         f"Distance change: {abs(serial_communicator.current_total_distance - last_processed_distance):.2f}mm"
-            #     )
 
             time.sleep(0.01)
 
@@ -268,6 +260,13 @@ def serial_monitor_thread(serial_communicator, image_processor, camera_manager, 
 def main():
     """Main function to start the system"""
 
+    mqtt_reset_topic = getattr(
+        config,
+        "MQTT_RESET_TOPIC",
+        f"machine/{config.DEVICE_ID}/control/reset",
+    )
+    reset_post_delay_sec = getattr(config, "RESET_POST_DELAY_SEC", 0.5)
+
     # Create timestamped output folder for this session
     session_timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     session_output_dir = os.path.join(config.OUTPUT_DIR, session_timestamp)
@@ -276,6 +275,56 @@ def main():
 
     # Initialize MQTT heartbeat
     heartbeat = None
+    reset_requested = threading.Event()
+
+    def queue_reset_request():
+        """Queue reset work to run inside the main loop thread."""
+        reset_requested.set()
+
+    def perform_reset():
+        """Reset DB values, ESP32 count, and runtime smoothing state."""
+        print("🔁 Processing reset command...")
+
+        db_success = False
+        if db_manager:
+            db_success = db_manager.insert_measurement(
+                total_distance=0.0,
+                stitch_length=0.0,
+                seam_allowance=0.0,
+                ignore_limits=True,
+            )
+            if db_success:
+                print("✅ DB reset row inserted (0,0,0)")
+            else:
+                print("⚠️ DB reset row insert failed")
+        else:
+            print("⚠️ DB unavailable for reset row insert")
+
+        serial_success = False
+        if serial_communicator:
+            serial_success = serial_communicator.send_command("R")
+            if serial_success:
+                print("✅ Serial reset command sent: R")
+            else:
+                print("⚠️ Serial reset command failed")
+        else:
+            print("⚠️ Serial reader unavailable for reset command")
+        
+
+        # Give ESP32 time to apply reset before using stitch count baseline again.
+        time.sleep(reset_post_delay_sec)
+
+        serial_communicator.current_total_distance = 0.0
+        serial_communicator.last_avg_stitch_length_mm = 0.0
+        stitch_length_buffer.clear()
+        seam_allowance_buffer.clear()
+        print("✅ Runtime counters and buffers reset")
+
+        if db_success and serial_success and heartbeat:
+            heartbeat.publish_reset_success()
+            print(f"✅ MQTT reset acknowledgment published: {mqtt_reset_topic} -> reset_success")
+
+    
     try:
         heartbeat = MqttHeartbeat(
             broker=config.MQTT_SERVER,
@@ -285,22 +334,24 @@ def main():
             topic=config.MQTT_HEARTBEAT_TOPIC,
             interval_sec=config.MQTT_HEARTBEAT_INTERVAL,
             tls_insecure=config.MQTT_TLS_INSECURE,
+            reset_topic=mqtt_reset_topic,
+            on_reset=queue_reset_request,
         )
         heartbeat.start()
         print(f"✅ MQTT heartbeat started: {config.MQTT_HEARTBEAT_TOPIC} (every {config.MQTT_HEARTBEAT_INTERVAL}s)")
     except Exception as e:
         print(f"⚠️ MQTT heartbeat not started: {e} (continuing without heartbeat)")
 
+    
+
     print("🚀 STARTING OPTIMIZED FABRIC INSPECTION SYSTEM")
-    print("=" * 50)
-    print("System Architecture:")
-    print("  • Esp32 with rotary encoder sends stitch count to PC via serial")
-    print("  • MySQL: Insert ON EVERY processed frame in 2 seconds ")
-    print("  • Image Cleanup: Deletes images older than 24 hours")
     print("=" * 50)
     print(f"Data will be inserted into MySQL at {config.DB_CONFIG['host']}/{config.DB_CONFIG['database']}")
     print(f"Images in {config.OUTPUT_DIR} will be deleted after {config.IMAGE_RETENTION_SECONDS/3600:.1f} hours")
     print("=" * 50)
+    
+    print("intemediate delay for smooth restart...")
+    time.sleep(1.0)
 
     # Initialize components
     print("🤖 Loading AI model...")
@@ -317,6 +368,8 @@ def main():
     db_manager = DatabaseManager()
     # Initialize SerialCommunicator with the current total distance from DB (or 0.0 if not available)        
     serial_communicator = SerialCommunicator()
+
+
 
     #reset the total distnace to 0 on startup to avoid false triggers
     if db_manager:
@@ -393,6 +446,10 @@ def main():
     try:
         while not shutdown_event.is_set():
             # print("⏳ Main thread idle - waiting for serial triggers...")
+            if reset_requested.is_set():
+                reset_requested.clear()
+                perform_reset()
+
             time.sleep(0.1)
     except KeyboardInterrupt:
         print("\n🛑 Shutdown requested...")
