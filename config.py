@@ -55,6 +55,8 @@ DEVICE_ID = DB_TABLE
 MQTT_HEARTBEAT_TOPIC = f"machine/{DEVICE_ID}/status/heartbeat"
 MQTT_HEARTBEAT_INTERVAL = 2.0  # seconds
 MQTT_TLS_INSECURE = os.getenv("MQTT_TLS_INSECURE", "true").lower() in ('true', '1', 't')
+MQTT_RESET_TOPIC = f"machine/{DEVICE_ID}/commands/reset"
+RESET_POST_DELAY_SEC=2.0
 
 # ---------------------------
 # Timing Configuration
