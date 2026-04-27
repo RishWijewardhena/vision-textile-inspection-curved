@@ -3,6 +3,7 @@
 import serial
 import config
 import time
+import threading
 from typing import Optional
 from utils.resource_discovery import find_esp32
 
@@ -27,6 +28,7 @@ class SerialCommunicator:
         self._fallback_print_interval_sec = 2.0  # print fallback warning at most once per 2s
         self._last_reconnect_attempt = 0.0
         self._reconnect_interval_sec = 2.0
+        self._serial_lock = threading.Lock()
 
         self._open_serial_port()
 
@@ -70,7 +72,6 @@ class SerialCommunicator:
                 if now - self._last_fallback_print_time >= self._fallback_print_interval_sec:
                     print(
                         "⚠️ Avg stitch length not available yet; skipping distance update "
-                        "(no fake data)."
                     )
                     self._last_fallback_print_time = now
                 return False
@@ -127,6 +128,39 @@ class SerialCommunicator:
                 self._buffer = ""
                 self._try_reconnect()
         return None
+
+    def send_command(self, command) -> bool:
+        """Send a command to ESP32 and return True on success."""
+        if not isinstance(command, str):
+            command = str(command)
+
+        if not command:
+            return False
+
+        if not self.serial_port or not self.serial_port.is_open:
+            self._try_reconnect()
+
+        if not self.serial_port or not self.serial_port.is_open:
+            print("⚠️ Cannot send serial command: no active serial connection")
+            return False
+
+        try:
+            with self._serial_lock:
+                self.serial_port.write(command.encode("utf-8"))
+                self.serial_port.flush()
+
+            if getattr(config, "LOG_DEBUG", False):
+                print(f"📤 Serial command sent: {command}")
+            return True
+        except Exception as e:
+            print(f"❌ Failed to send serial command '{command}': {e}")
+            try:
+                self.serial_port.close()
+            except Exception:
+                pass
+            self.serial_port = None
+            self._try_reconnect()
+            return False
 
     def close(self):
         if self.serial_port is not None:
