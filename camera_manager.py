@@ -5,7 +5,7 @@ import config
 from utils.resource_discovery import find_camera
 
 class CameraManager:
-    def __init__(self):
+    def __init__(self, reload_callback=None):
         """
         Initializes the CameraManager object.
 
@@ -14,16 +14,15 @@ class CameraManager:
         :raises: Exception
         """
         self.cap = None
-        self.camera_idx = config.CAMERA_IDX
+        self.camera_idx = None
+        self.reconnect_attempts = 0
+        self.reload_callback = reload_callback
         self.init_camera()
 
     def init_camera(self):
         """Initialize camera with proper error handling"""
-        preferred_cam = self.camera_idx
         discovered_cam = find_camera()
-        candidates = [preferred_cam]
-        if discovered_cam and discovered_cam not in candidates:
-            candidates.append(discovered_cam)
+        candidates = [discovered_cam] if discovered_cam else []
 
         last_error = None
 
@@ -62,30 +61,48 @@ class CameraManager:
     def capture_frame_safely(self):
         """Safely capture a frame with error handling and buffer flushing"""
         try:
+            if self.cap is None:
+                print("⚠️ Camera not initialized; attempting to reinitialize")
+                if not self.reinit_camera():
+                    return None
+
             for _ in range(3):
                 ret, _ = self.cap.read()
                 if not ret:
                     break
+
             ret, frame = self.cap.read()
             if not ret:
                 print("❌ ERROR: Failed to capture frame")
-                if self.reinit_camera():
-                    ret, frame = self.cap.read()
-                    if ret:
-                        print("✅ Camera reinitialized successfully")
-                        return frame
+                self._handle_reconnect_failure()
                 return None
+
+            self.reconnect_attempts = 0
             return frame
         except Exception as e:
             print(f"❌ Camera capture error: {e}")
-            if self.reinit_camera():
-                try:
-                    ret, frame = self.cap.read()
-                    if ret:
-                        return frame
-                except:
-                    pass
+            self._handle_reconnect_failure()
             return None
+
+    def _handle_reconnect_failure(self):
+        self.reconnect_attempts += 1
+        print(
+            f"⚠️ Camera reconnect attempt {self.reconnect_attempts}/"
+            f"{config.MAX_RECONNECT_ATTEMPTS}"
+        )
+
+        if self.reconnect_attempts >= config.MAX_RECONNECT_ATTEMPTS:
+            print("❌ Camera disconnected. Reloading webcam driver and attempting reconnect...")
+            if self.reload_callback:
+                try:
+                    self.reload_callback()
+                except Exception as exc:
+                    print(f"⚠️ Camera reload callback failed: {exc}")
+
+            self.reinit_camera()
+            self.reconnect_attempts = 0
+        else:
+            self.reinit_camera()
 
     def reinit_camera(self):
         """Attempt to reinitialize camera if it becomes unavailable"""
