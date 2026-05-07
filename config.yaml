@@ -9,6 +9,7 @@ camera:
   index: "/dev/video0"
   width: 1280
   height: 960
+  max_reconnect_attempts: 5
   calib_path: "camera_calibration.json"
   extr_path: "camera_extrinsics.json"
 
