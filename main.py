@@ -12,6 +12,7 @@ from ultralytics import YOLO
 import cv2
 
 import config
+import subprocess
 from camera_manager import CameraManager
 from image_processor import ImageProcessor
 from database_manager import DatabaseManager
@@ -31,6 +32,11 @@ seam_allowance_buffer = deque(maxlen=5)
 
 # Session folder for this run
 SESSION_FOLDER = None
+camera_issue_active = False
+
+
+def log_ts():
+    return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
 
 def is_stitch_length_in_ideal_range(value_mm):
@@ -56,6 +62,16 @@ def sigint_handler(sig, frame):
 
 signal.signal(signal.SIGINT, sigint_handler)
 
+def reload_camera():
+    """Reload webcam driver (uvcvideo)."""
+    print(log_ts() + " 🔄 Reloading webcam driver...")
+    try:
+        subprocess.run(["modprobe", "-r", "uvcvideo"], check=True)
+        subprocess.run(["modprobe", "uvcvideo"], check=True)
+        print(log_ts() + " ✅ Webcam driver reloaded")
+    except subprocess.CalledProcessError as e:
+        print(log_ts() + f" ⚠️ Failed to reload webcam driver: {e}")
+
 
 def process_fabric_immediate(
     image_processor,
@@ -64,6 +80,7 @@ def process_fabric_immediate(
     db_manager,
     session_output_dir,
     delta_stitches,
+    heartbeat,
 ):
     """
     Process fabric immediately when triggered and INSERT ONCE per processed frame.
@@ -75,14 +92,36 @@ def process_fabric_immediate(
         print("⚠️ WARNING: Processing lock in use - skipping capture")
         return
 
+    global camera_issue_active
+
     try:
-        ts = datetime.now().strftime("%Y%m%d_%H%M%S_%f")[:-3]
-        print(f"🔍 Starting fabric analysis at {ts}")
+        capture_ts = datetime.now().strftime("%Y%m%d_%H%M%S_%f")[:-3]
+        print(f"🔍 Starting fabric analysis at {capture_ts}")
 
         frame = camera_manager.capture_frame_safely()
         if frame is None:
-            print("❌ Could not capture frame - skipping analysis")
+            print("❌ Could not capture frame - reporting camera issue")
+            image_processor.process_frame(
+                None,
+                serial_communicator.current_total_distance,
+            )
+
+            if heartbeat:
+                try:
+                    heartbeat.client.publish(
+                        config.MQTT_CAMERA_ISSUE_TOPIC,
+                        payload="issue",
+                        qos=0,
+                        retain=False,
+                    )
+                    print(log_ts() + f" 📡 MQTT camera issue sent: {config.MQTT_CAMERA_ISSUE_TOPIC} -> issue")
+                except Exception as exc:
+                    print(log_ts() + f" ⚠️ MQTT camera issue publish failed: {exc}")
+
+            camera_issue_active = True
             return
+
+
 
         print("✅ Frame captured, starting AI inference...")
         start_time = time.time()
@@ -99,7 +138,7 @@ def process_fabric_immediate(
         if is_stitch_length_in_ideal_range(avg_len):
             serial_communicator.last_avg_stitch_length_mm = float(avg_len)
 
-        out_path = os.path.join(session_output_dir, f"fabric_{ts}.jpg")
+        out_path = os.path.join(session_output_dir, f"fabric_{capture_ts}.jpg")
         cv2.imwrite(out_path, annotated)
 
         print(f"📊 FABRIC ANALYSIS RESULTS ({summary['timestamp']}):")
@@ -186,7 +225,7 @@ def process_fabric_immediate(
 
 
 
-def serial_monitor_thread(serial_communicator, image_processor, camera_manager, db_manager, session_output_dir):
+def serial_monitor_thread(serial_communicator, image_processor, camera_manager, db_manager, session_output_dir, heartbeat):
     """
     Thread that monitors serial for stitch count / distance updates
     and triggers image processing when distance change criteria are met.
@@ -240,6 +279,7 @@ def serial_monitor_thread(serial_communicator, image_processor, camera_manager, 
                         db_manager,
                         session_output_dir,
                         pending_delta_stitches,
+                        heartbeat,
                     ),
                     daemon=True
                 )
@@ -254,6 +294,45 @@ def serial_monitor_thread(serial_communicator, image_processor, camera_manager, 
 
         except Exception as e:
             print(f"[ERROR] Serial monitor thread: {e}")
+            shutdown_event.set()
+
+
+def fallback_capture_thread(image_processor, camera_manager, serial_communicator, db_manager, session_output_dir, heartbeat):
+    """Capture and process frames on a timer when serial input is unavailable."""
+    global last_capture_time
+
+    print("[INFO] Fallback capture thread started (serial unavailable)")
+
+    while not shutdown_event.is_set():
+        try:
+            current_time = time.time()
+            if current_time - last_capture_time >= config.CAPTURE_INTERVAL:
+                print(
+                    f"\n=== FALLBACK CAPTURE TRIGGERED "
+                    f"(Distance: {serial_communicator.current_total_distance:.2f}mm, "
+                    f"Interval: {config.CAPTURE_INTERVAL:.2f}s) ==="
+                )
+
+                processing_thread = threading.Thread(
+                    target=process_fabric_immediate,
+                    args=(
+                        image_processor,
+                        camera_manager,
+                        serial_communicator,
+                        db_manager,
+                        session_output_dir,
+                        0,
+                        heartbeat,
+                    ),
+                    daemon=True,
+                )
+                processing_thread.start()
+
+                last_capture_time = current_time
+
+            time.sleep(0.05)
+        except Exception as e:
+            print(f"[ERROR] Fallback capture thread: {e}")
             shutdown_event.set()
 
 
@@ -359,10 +438,9 @@ def main():
     model.to(config.DEVICE)
     print(f"✅ Model loaded on {config.DEVICE}")
 
-    camera_manager = CameraManager()
+    camera_manager = CameraManager(reload_callback=reload_camera)
     if not camera_manager.cap:
-        print("❌ CRITICAL ERROR: Camera initialization failed")
-        sys.exit(1)
+        print("⚠️ Camera initialization failed; system will keep running and report camera issues until feed recovers")
 
     image_processor = ImageProcessor(model)
     db_manager = DatabaseManager()
@@ -422,7 +500,7 @@ def main():
     if serial_communicator.serial_port is not None:
         serial_thread = threading.Thread(
             target=serial_monitor_thread,
-            args=(serial_communicator, image_processor, camera_manager, db_manager, session_output_dir),
+            args=(serial_communicator, image_processor, camera_manager, db_manager, session_output_dir, heartbeat),
             daemon=True
         )
         serial_thread.start()
@@ -430,6 +508,14 @@ def main():
         print("✅ Serial monitor thread started")
     else:
         print("⚠️ Serial monitor thread not started: Serial port not available.")
+        fallback_thread = threading.Thread(
+            target=fallback_capture_thread,
+            args=(image_processor, camera_manager, serial_communicator, db_manager, session_output_dir, heartbeat),
+            daemon=True,
+        )
+        fallback_thread.start()
+        threads.append(fallback_thread)
+        print("✅ Fallback capture thread started")
 
     cleanup_thread = threading.Thread(
         target=image_cleanup_thread,
