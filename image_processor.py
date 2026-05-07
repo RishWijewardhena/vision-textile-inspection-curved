@@ -578,6 +578,16 @@ class ImageProcessor:
 
     def process_frame(self, frame, current_total_distance):
         """Process a single frame and return results"""
+        if frame is None:
+            return None, {
+                "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                "edge_count": 0,
+                "avg_distance_mm": None,
+                "avg_stitch_length_mm": None,
+                "total_distance_mm": current_total_distance,
+                "camera_issue": True,
+            }, None
+
         frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
 
         # Keep inference silent to avoid per-frame speed/no-detection console spam.
