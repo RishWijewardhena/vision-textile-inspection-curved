@@ -4,7 +4,13 @@ import serial.tools.list_ports
 
 ESP32_VID = 0x303A
 ESP32_PID = 0x1001
-DEFAULT_CAM_LIST = ["/dev/video0", "/dev/video1", "/dev/video2"]
+DEFAULT_CAM_LIST = [
+    "/dev/video0",
+    "/dev/video1",
+    "/dev/video2",
+    "/dev/video3",
+    "/dev/video4",
+]
 
 
 def find_esp32():
