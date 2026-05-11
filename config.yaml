@@ -15,7 +15,7 @@ camera:
 
 output:
   directory: "thread_v2_snaps"
-  image_retention_seconds: 86400*4 # 24 hours
+  image_retention_seconds: 345600 # 24 hours
   cleanup_interval: 3600 # 1 hour
 
 database:
