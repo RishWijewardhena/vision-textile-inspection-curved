@@ -5,7 +5,7 @@ import paho.mqtt.client as mqtt
 
 
 class MqttHeartbeat(threading.Thread):
-    def __init__(self, broker, port, username, password, topic, interval_sec=2.0, tls_insecure=False, reset_topic=None, on_reset=None):
+    def __init__(self, broker, port, username, password, topic, interval_sec=2.0, tls_insecure=False, reset_topic=None, on_reset=None, esp32_issue_topic=None):
         super().__init__(daemon=True)
         self.broker = broker
         self.port = port
@@ -16,6 +16,7 @@ class MqttHeartbeat(threading.Thread):
         self.tls_insecure = tls_insecure
         self.reset_topic = reset_topic
         self.on_reset = on_reset
+        self.esp32_issue_topic = esp32_issue_topic
 
 
         self._stop_event = threading.Event()
@@ -56,10 +57,23 @@ class MqttHeartbeat(threading.Thread):
             except Exception as exc:
                 print(f"⚠️ Reset callback failed: {exc}")
 
+    def _publish_to_topic(self, topic, payload):
+        """Helper method to publish to a specific topic."""
+        if not topic:
+            return
+        self.client.publish(topic, payload=payload, qos=0, retain=False)
+
     def publish_reset_success(self):
         if not self.reset_topic:
             return
         self.client.publish(self.reset_topic, payload="reset_success", qos=0, retain=False)
+
+    def publish_esp32_issue(self):
+        """Publish ESP32 issue status to esp32_issue topic."""
+        if not self.esp32_issue_topic:
+            return
+        self._publish_to_topic(self.esp32_issue_topic, "issue")
+        print(f"📡 MQTT published ESP32 issue to topic: {self.esp32_issue_topic}")
 
     def run(self):
         self.client.connect(self.broker, self.port, keepalive=30)
