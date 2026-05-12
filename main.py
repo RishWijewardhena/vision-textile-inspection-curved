@@ -66,11 +66,15 @@ def reload_camera():
     """Reload webcam driver (uvcvideo)."""
     print(log_ts() + " 🔄 Reloading webcam driver...")
     try:
-        subprocess.run(["modprobe", "-r", "uvcvideo"], check=True)
-        subprocess.run(["modprobe", "uvcvideo"], check=True)
+        subprocess.run(["sudo", "modprobe", "-r", "uvcvideo"], check=True, capture_output=True)
+        time.sleep(0.5)  # Give system time to unload
+        subprocess.run(["sudo", "modprobe", "uvcvideo"], check=True, capture_output=True)
+        time.sleep(0.5)  # Give driver time to load
         print(log_ts() + " ✅ Webcam driver reloaded")
     except subprocess.CalledProcessError as e:
         print(log_ts() + f" ⚠️ Failed to reload webcam driver: {e}")
+    except PermissionError:
+        print(log_ts() + f" ❌ Permission denied: Run 'sudo ./scripts/grant_passwordless_sudoers_for_modprobe.sh' first")
 
 
 def process_fabric_immediate(
