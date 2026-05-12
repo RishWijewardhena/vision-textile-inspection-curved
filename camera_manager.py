@@ -47,7 +47,7 @@ class CameraManager:
                 return True
             except Exception as e:
                 last_error = e
-                print(f"⚠️ Camera init attempt failed on {cam_idx}: {e}")
+                print(f" Camera init attempt failed on {cam_idx}: {e}")
 
         try:
             self.cap = None
@@ -88,7 +88,7 @@ class CameraManager:
     def _handle_reconnect_failure(self):
         self.reconnect_attempts += 1
         print(
-            f"⚠️ Camera reconnect attempt {self.reconnect_attempts}/"
+            f" Camera reconnect attempt {self.reconnect_attempts}/"
             f"{config.MAX_RECONNECT_ATTEMPTS}"
         )
 
