@@ -51,19 +51,20 @@ class CameraManager:
 
         try:
             self.cap = None
-            print(f"❌ Camera initialization failed: {last_error}")
+            print(f" Camera initialization failed: {last_error}")
             return False
         except Exception as e:
             self.cap = None
-            print(f"❌ Camera initialization failed: {e}")
+            print(f" Camera initialization failed: {e}")
             return False
 
     def capture_frame_safely(self):
         """Safely capture a frame with error handling and buffer flushing"""
         try:
             if self.cap is None:
-                print("⚠️ Camera not initialized; attempting to reinitialize")
+                print(" Camera not initialized; attempting to reinitialize")
                 if not self.reinit_camera():
+                    self._handle_reconnect_failure()
                     return None
 
             for _ in range(3):
@@ -73,14 +74,14 @@ class CameraManager:
 
             ret, frame = self.cap.read()
             if not ret:
-                print("❌ ERROR: Failed to capture frame")
+                print(" ERROR: Failed to capture frame")
                 self._handle_reconnect_failure()
                 return None
 
             self.reconnect_attempts = 0
             return frame
         except Exception as e:
-            print(f"❌ Camera capture error: {e}")
+            print(f" Camera capture error: {e}")
             self._handle_reconnect_failure()
             return None
 
@@ -92,12 +93,12 @@ class CameraManager:
         )
 
         if self.reconnect_attempts >= config.MAX_RECONNECT_ATTEMPTS:
-            print("❌ Camera disconnected. Reloading webcam driver and attempting reconnect...")
+            print(" Camera disconnected. Reloading webcam driver and attempting reconnect...")
             if self.reload_callback:
                 try:
                     self.reload_callback()
                 except Exception as exc:
-                    print(f"⚠️ Camera reload callback failed: {exc}")
+                    print(f" Camera reload callback failed: {exc}")
 
             self.reinit_camera()
             self.reconnect_attempts = 0
@@ -111,9 +112,10 @@ class CameraManager:
                 self.cap.release()
                 self.cap = None
             time.sleep(1)
+            
             return self.init_camera()
         except Exception as e:
-            print(f"❌ Camera reinitialization failed: {e}")
+            print(f" Camera reinitialization failed: {e}")
             return False
 
     def release(self):
