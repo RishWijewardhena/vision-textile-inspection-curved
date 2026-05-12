@@ -30,6 +30,10 @@ last_processed_distance = 0.0
 stitch_length_buffer = deque(maxlen=5)
 seam_allowance_buffer = deque(maxlen=5)
 
+# Track raw measurements (in and out of range) for confirmed override detection
+raw_stitch_history = deque(maxlen=config.CONFIRM_CONSECUTIVE)
+raw_seam_history = deque(maxlen=config.CONFIRM_CONSECUTIVE)
+
 # Session folder for this run
 SESSION_FOLDER = None
 camera_issue_active = False
@@ -165,6 +169,12 @@ def process_fabric_immediate(
         seam_allowance = summary.get("avg_distance_mm")              # avg_dist -> seam_allowance
         total_distance = serial_communicator.current_total_distance  # total_distance
 
+        # Track ALL raw measurements (in and out of range) for confirmed override detection
+        if stitch_length is not None:
+            raw_stitch_history.append(stitch_length)
+        if seam_allowance is not None:
+            raw_seam_history.append(seam_allowance)
+
         # Keep a rolling buffer of valid real measurements.
         if is_stitch_length_in_ideal_range(stitch_length):
             stitch_length_buffer.append(float(stitch_length))
@@ -188,8 +198,36 @@ def process_fabric_immediate(
                     f"from {len(seam_allowance_buffer)} samples"
                 )
 
-        # Final safety filter before persistence.
+        confirmed_override = False
+
+        # Stitch length: Check for N consecutive similar samples above soft upper limit
         if stitch_length is not None and not is_stitch_length_in_ideal_range(stitch_length):
+            if stitch_length > config.IDEAL_STITCH_LENGTH_MM_MAX:
+                recent = [v for v in list(raw_stitch_history) if v is not None]
+                if len(recent) >= config.CONFIRM_CONSECUTIVE and all(v > config.IDEAL_STITCH_LENGTH_MM_MAX - config.CONFIRM_TOLERANCE_MM for v in recent):
+                    confirmed_override = True
+                    print(log_ts() + f" **** Stitch length above {config.IDEAL_STITCH_LENGTH_MM_MAX}mm but sustained for {config.CONFIRM_CONSECUTIVE} samples - accepting as valid")
+            elif stitch_length < config.IDEAL_STITCH_LENGTH_MM_MIN:
+                recent = [v for v in list(raw_stitch_history) if v is not None]
+                if len(recent) >= config.CONFIRM_CONSECUTIVE and all(v < config.IDEAL_STITCH_LENGTH_MM_MIN + config.CONFIRM_TOLERANCE_MM for v in recent):
+                    confirmed_override = True
+                    print(log_ts() + f" **** Stitch length below {config.IDEAL_STITCH_LENGTH_MM_MIN}mm but sustained for {config.CONFIRM_CONSECUTIVE} samples - accepting as valid")
+
+        # Seam allowance: Check for N consecutive similar samples above soft upper limit
+        if seam_allowance is not None and not is_seam_allowance_in_ideal_range(seam_allowance):
+            if seam_allowance > config.IDEAL_SEAM_ALLOWANCE_MM_MAX:
+                recent_w = [v for v in list(raw_seam_history) if v is not None]
+                if len(recent_w) >= config.CONFIRM_CONSECUTIVE and all(v > config.IDEAL_SEAM_ALLOWANCE_MM_MAX - config.CONFIRM_TOLERANCE_MM for v in recent_w):
+                    confirmed_override = True
+                    print(log_ts() + f" **** Seam allowance above {config.IDEAL_SEAM_ALLOWANCE_MM_MAX}mm but sustained for {config.CONFIRM_CONSECUTIVE} samples - accepting as valid")
+            elif seam_allowance < config.IDEAL_SEAM_ALLOWANCE_MM_MIN:
+                recent_w = [v for v in list(raw_seam_history) if v is not None]
+                if len(recent_w) >= config.CONFIRM_CONSECUTIVE and all(v < config.IDEAL_SEAM_ALLOWANCE_MM_MIN + config.CONFIRM_TOLERANCE_MM for v in recent_w):
+                    confirmed_override = True
+                    print(log_ts() + f" **** Seam allowance below {config.IDEAL_SEAM_ALLOWANCE_MM_MIN}mm but sustained for {config.CONFIRM_CONSECUTIVE} samples - accepting as valid")
+
+        # Final safety filter before persistence: reject out-of-range values UNLESS confirmed by override
+        if stitch_length is not None and not is_stitch_length_in_ideal_range(stitch_length) and not confirmed_override:
             print(
                 "!!! Ignoring out-of-range stitch_length before DB insert: "
                 f"{stitch_length:.3f}mm "
@@ -198,7 +236,7 @@ def process_fabric_immediate(
             )
             stitch_length = None
 
-        if seam_allowance is not None and not is_seam_allowance_in_ideal_range(seam_allowance):
+        if seam_allowance is not None and not is_seam_allowance_in_ideal_range(seam_allowance) and not confirmed_override:
             print(
                 "!!! Ignoring out-of-range seam_allowance before DB insert: "
                 f"{seam_allowance:.3f}mm "
