@@ -81,6 +81,7 @@ def process_fabric_immediate(
     session_output_dir,
     delta_stitches,
     heartbeat,
+    skip_db_insert=False,
 ):
     """
     Process fabric immediately when triggered and INSERT ONCE per processed frame.
@@ -203,16 +204,20 @@ def process_fabric_immediate(
             seam_allowance = None
 
 
-        ok = db_manager.insert_measurement(
-            stitch_length=stitch_length,
-            seam_allowance=seam_allowance,
-            total_distance=total_distance
-        )
+        ok = False
+        if not skip_db_insert:
+            ok = db_manager.insert_measurement(
+                stitch_length=stitch_length,
+                seam_allowance=seam_allowance,
+                total_distance=total_distance
+            )
 
-        if ok:
-            print("✅ MySQL insert done (per-frame)")
+            if ok:
+                print("✅ MySQL insert done (per-frame)")
+            else:
+                print("❌ MySQL insert failed (per-frame)")
         else:
-            print("❌ MySQL insert failed (per-frame)")
+            print("ℹ️ Skipping DB insert (fallback mode - no ESP32 connection)")
 
     except Exception as e:
         print(f"❌ ERROR in fabric processing: {e}")
@@ -311,6 +316,13 @@ def fallback_capture_thread(image_processor, camera_manager, serial_communicator
                     f"Interval: {config.CAPTURE_INTERVAL:.2f}s) ==="
                 )
 
+                # Publish ESP32 issue to MQTT
+                if heartbeat:
+                    try:
+                        heartbeat.publish_esp32_issue()
+                    except Exception as exc:
+                        print(f"⚠️ MQTT ESP32 issue publish failed: {exc}")
+
                 processing_thread = threading.Thread(
                     target=process_fabric_immediate,
                     args=(
@@ -321,6 +333,7 @@ def fallback_capture_thread(image_processor, camera_manager, serial_communicator
                         session_output_dir,
                         0,
                         heartbeat,
+                        True,
                     ),
                     daemon=True,
                 )
@@ -413,6 +426,7 @@ def main():
             tls_insecure=config.MQTT_TLS_INSECURE,
             reset_topic=mqtt_reset_topic,
             on_reset=queue_reset_request,
+            esp32_issue_topic=config.MQTT_ESP32_ISSUE_TOPIC,
         )
         heartbeat.start()
         print(f"✅ MQTT heartbeat started: {config.MQTT_HEARTBEAT_TOPIC} (every {config.MQTT_HEARTBEAT_INTERVAL}s)")
