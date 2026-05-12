@@ -83,6 +83,12 @@ IDEAL_STITCH_LENGTH_MM_MIN = config['ideal_ranges']['stitch_length_mm_min']
 IDEAL_STITCH_LENGTH_MM_MAX = config['ideal_ranges']['stitch_length_mm_max']
 
 # ---------------------------
+# Confirmed Override Parameters
+# ---------------------------
+CONFIRM_CONSECUTIVE = 4  # number of consecutive out-of-range measurements to treat as valid
+CONFIRM_TOLERANCE_MM = 0.75  # mm — how close consecutive out-of-range samples must be to the limit
+
+# ---------------------------
 # Units and Classes
 # ---------------------------
 CALIB_PATH = config['camera']['calib_path']
