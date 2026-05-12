@@ -96,7 +96,7 @@ def process_fabric_immediate(
 
     try:
         capture_ts = datetime.now().strftime("%Y%m%d_%H%M%S_%f")[:-3]
-        print(f"🔍 Starting fabric analysis at {capture_ts}")
+        print(f" Starting fabric analysis at {capture_ts}")
 
         frame = camera_manager.capture_frame_safely()
         if frame is None:
@@ -114,7 +114,7 @@ def process_fabric_immediate(
                         qos=0,
                         retain=False,
                     )
-                    print(log_ts() + f" 📡 MQTT camera issue sent: {config.MQTT_CAMERA_ISSUE_TOPIC} -> issue")
+                    print(log_ts() + f" ! MQTT camera issue sent: {config.MQTT_CAMERA_ISSUE_TOPIC} -> issue")
                 except Exception as exc:
                     print(log_ts() + f" ⚠️ MQTT camera issue publish failed: {exc}")
 
@@ -139,7 +139,7 @@ def process_fabric_immediate(
         out_path = os.path.join(session_output_dir, f"fabric_{capture_ts}.jpg")
         cv2.imwrite(out_path, annotated)
 
-        print(f"📊 FABRIC ANALYSIS RESULTS ({summary['timestamp']}):")
+        print(f"!! FABRIC ANALYSIS RESULTS ({summary['timestamp']}):")
         print(f"   ├─ Total Distance: {summary['total_distance_mm']:.2f}mm")
         print(f"   ├─ Total Edges: {summary['edge_count']}")
 
@@ -186,7 +186,7 @@ def process_fabric_immediate(
         # Final safety filter before persistence.
         if stitch_length is not None and not is_stitch_length_in_ideal_range(stitch_length):
             print(
-                "⚠️ Ignoring out-of-range stitch_length before DB insert: "
+                "!!! Ignoring out-of-range stitch_length before DB insert: "
                 f"{stitch_length:.3f}mm "
                 f"(allowed {config.IDEAL_STITCH_LENGTH_MM_MIN:.3f}-"
                 f"{config.IDEAL_STITCH_LENGTH_MM_MAX:.3f}mm)"
@@ -195,7 +195,7 @@ def process_fabric_immediate(
 
         if seam_allowance is not None and not is_seam_allowance_in_ideal_range(seam_allowance):
             print(
-                "⚠️ Ignoring out-of-range seam_allowance before DB insert: "
+                "!!! Ignoring out-of-range seam_allowance before DB insert: "
                 f"{seam_allowance:.3f}mm "
                 f"(allowed {config.IDEAL_SEAM_ALLOWANCE_MM_MIN:.3f}-"
                 f"{config.IDEAL_SEAM_ALLOWANCE_MM_MAX:.3f}mm)"
