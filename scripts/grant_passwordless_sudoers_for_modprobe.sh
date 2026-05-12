@@ -21,7 +21,7 @@ echo "Installing sudoers rule for user: $target_user"
 
 TMPFILE="$(mktemp)"
 cat >"$TMPFILE" <<EOF
-${target_user} ALL=(root) NOPASSWD: /sbin/modprobe -r cdc_acm, /sbin/modprobe cdc_acm, /sbin/modprobe -r usb_storage, /sbin/modprobe usb_storage
+${target_user} ALL=(root) NOPASSWD: /sbin/modprobe -r cdc_acm, /sbin/modprobe cdc_acm, /sbin/modprobe -r usb_storage, /sbin/modprobe usb_storage, /sbin/modprobe -r uvcvideo, /sbin/modprobe uvcvideo
 EOF
 
 # Validate syntax with visudo
