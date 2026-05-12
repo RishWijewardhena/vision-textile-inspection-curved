@@ -219,7 +219,7 @@ def process_fabric_immediate(
             if ok:
                 print("✅ MySQL insert done (per-frame)")
             else:
-                print("❌ MySQL insert failed (per-frame)")
+                print(" MySQL insert skipped (per-frame)")
         else:
             print("ℹ️ Skipping DB insert (fallback mode - no ESP32 connection)")
 
