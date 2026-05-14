@@ -5,7 +5,7 @@ import config
 import time
 import threading
 from typing import Optional
-from utils.resource_discovery import find_esp32
+from utils.resource_discovery import find_esp32, list_serial_ports
 
 
 class SerialCommunicator:
@@ -29,6 +29,8 @@ class SerialCommunicator:
         self._last_reconnect_attempt = 0.0
         self._reconnect_interval_sec = 2.0
         self._serial_lock = threading.Lock()
+        self._last_port_dump_time = 0.0
+        self._port_dump_interval_sec = 10.0
 
         self._open_serial_port()
 
@@ -49,7 +51,44 @@ class SerialCommunicator:
 
         self.serial_port = None
         print("[ERROR] Serial port unavailable after configured + auto-discovery attempts")
+        self._log_available_ports()
         return False
+
+    def _log_available_ports(self):
+        """Log detected serial ports (rate limited) to aid debugging."""
+        now = time.time()
+        if now - self._last_port_dump_time < self._port_dump_interval_sec:
+            return
+        self._last_port_dump_time = now
+
+        ports = list_serial_ports()
+        if not ports:
+            print("[INFO] No serial ports detected")
+            return
+
+        print("[INFO] Detected serial ports:")
+        for port in ports:
+            vid = port.get("vid")
+            pid = port.get("pid")
+            if vid is not None and pid is not None:
+                vidpid = f"{vid:04X}:{pid:04X}"
+            else:
+                vidpid = "None"
+
+            hwid = port.get("hwid") or ""
+            manufacturer = port.get("manufacturer") or ""
+            product = port.get("product") or ""
+            description = port.get("description") or ""
+
+            print(
+                " - "
+                f"{port.get('device')} "
+                f"vidpid={vidpid} "
+                f"hwid={hwid} "
+                f"manufacturer={manufacturer} "
+                f"product={product} "
+                f"description={description}"
+            )
 
     def _try_reconnect(self):
         """Attempt reconnect with rate limiting to avoid busy-loop retries."""
