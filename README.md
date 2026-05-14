@@ -37,7 +37,7 @@ The annotated image for each frame is saved under `output.directory` in [config.
 
 1.  **`.env` file:** Create a `.env` file in the root directory to store your database and MQTT credentials. You can use the `.env.example` file as a template.
 
-2.  **`config.yaml`:** This file contains the main configuration for the application, including camera settings, serial port, and thresholds.
+2.  **`config.yaml`:** This file contains the main configuration for the application, including camera settings, serial port, and thresholds. You can set `camera.index` to a device path (for example `/dev/video1`) or a numeric index to force the preferred camera.
 
 3.  **Camera Calibration:**
     *   `camera_calibration.json`: Contains the camera intrinsic matrix and distortion coefficients.
@@ -73,7 +73,7 @@ The system will start, initialize the camera and serial communication, and begin
 
 ## Runtime Behavior
 
-- **Camera capture**: Frames are captured from the first available `/dev/video*` device that opens successfully. Capture uses the resolution configured in [config.yaml](config.yaml).
+- **Camera capture**: The system tries `camera.index` first, then scans `/dev/v4l/by-id`, then `/dev/video*` and uses the first device that opens successfully. Capture uses the resolution configured in [config.yaml](config.yaml).
 - **Reconnect attempts**: When capture fails, the camera is reinitialized. After `camera.max_reconnect_attempts` failures, the app calls `reload_camera()` and retries.
 - **Serial-triggered processing**: When the ESP32 serial port is available, processing runs on a timed interval and distance updates are derived from stitch counts.
 - **Fallback capture (no serial)**: If the serial port is not available, the app still captures and processes frames on the same `processing.capture_interval`.

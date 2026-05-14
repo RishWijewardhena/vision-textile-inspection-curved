@@ -64,7 +64,7 @@
 - `reinit_camera()` — Gracefully closes and reopens camera device
 
 **Features**:
-- Auto-discovery of `/dev/video0` (or user-configured index)
+- Tries `camera.index` first, then `/dev/v4l/by-id`, then `/dev/video*` for camera discovery
 - Configurable frame resolution (default 1280x960)
 - Automatic driver reload (modprobe uvcvideo) on persistent failure
 - Graceful degradation: system continues if camera is unavailable
