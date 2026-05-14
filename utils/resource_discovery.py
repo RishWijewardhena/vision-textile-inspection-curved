@@ -13,6 +13,27 @@ DEFAULT_CAM_LIST = [
 ]
 
 
+def list_serial_ports():
+    """Return a list of detected serial ports with metadata for diagnostics."""
+    ports = []
+    try:
+        for port in serial.tools.list_ports.comports():
+            ports.append(
+                {
+                    "device": port.device,
+                    "vid": port.vid,
+                    "pid": port.pid,
+                    "hwid": port.hwid,
+                    "manufacturer": port.manufacturer,
+                    "product": port.product,
+                    "description": port.description,
+                }
+            )
+    except Exception as exc:
+        print(f"[WARN] Serial port listing failed: {exc}")
+    return ports
+
+
 def find_esp32():
     """Return serial device path for ESP32 by USB VID/PID, or None."""
     try:
