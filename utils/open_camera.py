@@ -1,7 +1,20 @@
 import cv2
+import config
 
-# 0 is usually the first USB camera
-cap = cv2.VideoCapture("/dev/video0")
+
+def _normalize_camera_index(value):
+    if value is None:
+        return None
+    if isinstance(value, int):
+        return value
+    if isinstance(value, str) and value.strip().isdigit():
+        return int(value.strip())
+    return value
+
+
+camera_index = _normalize_camera_index(config.CAMERA_IDX) or "/dev/video0"
+print(f"[INFO] Opening camera: {camera_index}")
+cap = cv2.VideoCapture(camera_index, cv2.CAP_V4L2)
 
 if not cap.isOpened():
     print("❌ Cannot open camera")

@@ -1,8 +1,9 @@
 
 import cv2
+import os
 import time
 import config
-from utils.resource_discovery import find_camera
+from utils.resource_discovery import list_camera_candidates
 
 class CameraManager:
     def __init__(self, reload_callback=None):
@@ -21,14 +22,25 @@ class CameraManager:
 
     def init_camera(self):
         """Initialize camera with proper error handling"""
-        discovered_cam = find_camera()
-        candidates = [discovered_cam] if discovered_cam else []
+        candidates = list_camera_candidates(preferred=config.CAMERA_IDX)
+        if candidates:
+            print(f"[INFO] Camera candidates: {', '.join(str(c) for c in candidates)}")
+        else:
+            print("[WARN] No camera candidates discovered")
 
         last_error = None
 
         for cam_idx in candidates:
             try:
-                cap = cv2.VideoCapture(cam_idx)
+                if isinstance(cam_idx, str) and cam_idx.startswith("/dev/"):
+                    if not os.path.exists(cam_idx):
+                        raise FileNotFoundError(f"Device path not found: {cam_idx}")
+                    if not os.access(cam_idx, os.R_OK | os.W_OK):
+                        raise PermissionError(
+                            f"No access to {cam_idx} (add user to video group)"
+                        )
+
+                cap = cv2.VideoCapture(cam_idx,cv2.CAP_V4L2)
                 if not cap.isOpened():
                     raise Exception(f"Cannot open camera {cam_idx}")
 
