@@ -342,13 +342,21 @@ def serial_monitor_thread(serial_communicator, image_processor, camera_manager, 
             shutdown_event.set()
 
 
-def fallback_capture_thread(image_processor, camera_manager, serial_communicator, db_manager, session_output_dir, heartbeat):
+def fallback_capture_thread(
+    image_processor,
+    camera_manager,
+    serial_communicator,
+    db_manager,
+    session_output_dir,
+    heartbeat,
+    stop_event,
+):
     """Capture and process frames on a timer when serial input is unavailable."""
     global last_capture_time
 
     print("[INFO] Fallback capture thread started (serial unavailable)")
 
-    while not shutdown_event.is_set():
+    while not shutdown_event.is_set() and not stop_event.is_set():
         try:
             current_time = time.time()
             if current_time - last_capture_time >= config.CAPTURE_INTERVAL:
@@ -387,6 +395,9 @@ def fallback_capture_thread(image_processor, camera_manager, serial_communicator
         except Exception as e:
             print(f"[ERROR] Fallback capture thread: {e}")
             shutdown_event.set()
+
+    if stop_event.is_set() and not shutdown_event.is_set():
+        print("[INFO] Fallback capture thread stopped (serial available)")
 
 
 def main():
@@ -550,25 +561,42 @@ def main():
 
 
     threads = []
+    serial_thread = None
+    fallback_thread = None
+    fallback_stop_event = threading.Event()
+    fallback_active = False
+    serial_active = False
+    last_serial_probe_time = 0.0
+    serial_probe_interval_sec = 1.0
 
     if serial_communicator.serial_port is not None:
         serial_thread = threading.Thread(
             target=serial_monitor_thread,
             args=(serial_communicator, image_processor, camera_manager, db_manager, session_output_dir, heartbeat),
-            daemon=True
+            daemon=True,
         )
         serial_thread.start()
         threads.append(serial_thread)
+        serial_active = True
         print("✅ Serial monitor thread started")
     else:
         print("⚠️ Serial monitor thread not started: Serial port not available.")
         fallback_thread = threading.Thread(
             target=fallback_capture_thread,
-            args=(image_processor, camera_manager, serial_communicator, db_manager, session_output_dir, heartbeat),
+            args=(
+                image_processor,
+                camera_manager,
+                serial_communicator,
+                db_manager,
+                session_output_dir,
+                heartbeat,
+                fallback_stop_event,
+            ),
             daemon=True,
         )
         fallback_thread.start()
         threads.append(fallback_thread)
+        fallback_active = True
         print("✅ Fallback capture thread started")
 
     cleanup_thread = threading.Thread(
@@ -589,6 +617,33 @@ def main():
             if reset_requested.is_set():
                 reset_requested.clear()
                 perform_reset()
+
+            if fallback_active and not serial_active:
+                now = time.time()
+                if now - last_serial_probe_time >= serial_probe_interval_sec:
+                    last_serial_probe_time = now
+                    serial_communicator.read_serial_data()
+                    if serial_communicator.serial_port is not None:
+                        print("✅ Serial port detected; switching to serial monitor thread")
+                        fallback_stop_event.set()
+                        if fallback_thread:
+                            fallback_thread.join(timeout=2.0)
+                        serial_thread = threading.Thread(
+                            target=serial_monitor_thread,
+                            args=(
+                                serial_communicator,
+                                image_processor,
+                                camera_manager,
+                                db_manager,
+                                session_output_dir,
+                                heartbeat,
+                            ),
+                            daemon=True,
+                        )
+                        serial_thread.start()
+                        threads.append(serial_thread)
+                        serial_active = True
+                        fallback_active = False
 
             time.sleep(0.1)
     except KeyboardInterrupt:
