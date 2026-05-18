@@ -130,7 +130,7 @@ def process_fabric_immediate(
             camera_issue_active = True
             return
 
-        print("Frame captured, starting AI inference...")
+        #print("Frame captured, starting AI inference...")
         start_time = time.time()
 
         annotated, summary, result = image_processor.process_frame(
