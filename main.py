@@ -155,17 +155,9 @@ def process_fabric_immediate(
 
         # Only log detailed results if we have measurements
         if stitch_length is not None or seam_allowance is not None:
-            print(f"FABRIC ANALYSIS RESULTS ({log_ts()}):")
-            print(f"   Total Distance: {total_distance:.2f}mm")
-            print(f"   Total Edges: {summary['edge_count']}")
-
-            if stitch_length is not None:
-                print(f"   Avg Stitch Length: {stitch_length:.2f}mm")
-            
-            if seam_allowance is not None:
-                print(f"   Avg Stitch-Top Edge Distance: {seam_allowance:.2f}mm")
-
-            print(f"   Processing Time: {processing_time:.2f}s")
+            stitch_fmt = f"{stitch_length:.2f}mm" if stitch_length is not None else "N/A"
+            seam_fmt = f"{seam_allowance:.2f}mm" if seam_allowance is not None else "N/A"
+            print(f"✅ FABRIC ANALYSIS ({log_ts()}): Distance {total_distance:.2f}mm | Edges {summary['edge_count']} | Stitch {stitch_fmt} | Seam {seam_fmt} | Time {processing_time:.2f}s")
         else:
             print(f"[{log_ts()}] Unable to obtain measurements from frame")
 
