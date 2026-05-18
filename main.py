@@ -302,7 +302,6 @@ def serial_monitor_thread(serial_communicator, image_processor, camera_manager, 
 
             if current_time - last_capture_time >= config.CAPTURE_INTERVAL:
                 print(
-                    f"\nFABRIC PROCESSING TRIGGERED "
                     f"(Distance: {serial_communicator.current_total_distance:.2f}mm, "
                     f"Interval: {config.CAPTURE_INTERVAL:.2f}s)"
                 )
