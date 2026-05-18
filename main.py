@@ -552,11 +552,19 @@ def main():
             if is_seam_allowance_in_ideal_range(seam_val):
                 seam_allowance_buffer.append(seam_val)
         if recent_real:
+            stitch_mean = sum(stitch_length_buffer) / len(stitch_length_buffer) if stitch_length_buffer else 0.0
+            seam_mean = sum(seam_allowance_buffer) / len(seam_allowance_buffer) if seam_allowance_buffer else 0.0
             print(
                 f"Seeded measurement buffers from DB: {len(recent_real)} samples "
-                f"(stitch mean {sum(stitch_length_buffer)/len(stitch_length_buffer):.3f}mm, "
-                f"seam mean {sum(seam_allowance_buffer)/len(seam_allowance_buffer):.3f}mm)"
+                f"(stitch mean {stitch_mean:.3f}mm, "
+                f"seam mean {seam_mean:.3f}mm)"
             )
+            
+            # ✅ Initialize serial communicator's stitch length from buffer mean
+            # This unblocks distance calculations immediately when serial data arrives
+            if stitch_mean > 0:
+                serial_communicator.last_avg_stitch_length_mm = stitch_mean
+                print(f"✅ Initialized stitch length from DB: {stitch_mean:.3f}mm (distance calculation ready)")
 
 
 
