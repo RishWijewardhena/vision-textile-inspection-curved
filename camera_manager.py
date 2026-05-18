@@ -1,4 +1,3 @@
-
 import cv2
 import os
 import time
@@ -44,9 +43,13 @@ class CameraManager:
                 if not cap.isOpened():
                     raise Exception(f"Cannot open camera {cam_idx}")
 
+                # Force MJPG compression FIRST (before resolution settings for proper negotiation)
+                cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*'MJPG'))
+                
                 cap.set(cv2.CAP_PROP_FRAME_WIDTH, config.FRAME_W)
                 cap.set(cv2.CAP_PROP_FRAME_HEIGHT, config.FRAME_H)
                 cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+                time.sleep(1)
 
                 ret, _ = cap.read()
                 if not ret:
@@ -79,7 +82,7 @@ class CameraManager:
                     self._handle_reconnect_failure()
                     return None
 
-            for _ in range(3):
+            for _ in range(25):
                 ret, _ = self.cap.read()
                 if not ret:
                     break
