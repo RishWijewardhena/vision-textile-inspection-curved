@@ -451,15 +451,16 @@ class ImageProcessor:
                     total_distance_mm += distance_mm
                 valid_distance_count = len(stitch_centers)
                 avg_distance_mm = total_distance_mm / valid_distance_count
-                print("[WARNING] No edge found in stitch columns: using mean envelope y fallback for distance calculation.")
+                # print("[WARNING] No edge found in stitch columns: using mean envelope y fallback for distance calculation.")
             else:
-                print("[WARNING] No fabric edge detected in columns containing stitches.")
+                pass
+                # print("[WARNING] No fabric edge detected in columns containing stitches.")
 
-        # Debug logging: why avg_distance_mm might be None
-        stitch_count = len(stitch_centers)
-        edge_columns = sum(1 for y in envelope if y != -1)
-        calculated_distances = len(all_distances)
-        print(f"[DEBUG] stitch_centers={stitch_count}, edge_columns={edge_columns}, distances_computed={calculated_distances}, avg_distance_mm={avg_distance_mm}")
+        # Debug logging: why avg_distance_mm might be None (suppressed - only print if needed for troubleshooting)
+        # stitch_count = len(stitch_centers)
+        # edge_columns = sum(1 for y in envelope if y != -1)
+        # calculated_distances = len(all_distances)
+        # print(f"[DEBUG] stitch_centers={stitch_count}, edge_columns={edge_columns}, distances_computed={calculated_distances}, avg_distance_mm={avg_distance_mm}")
 
         # Provide a minimal edge_centers list so caller code can report an edge count.
         # We use a representative point (center x, topmost detected edge y) when available.
