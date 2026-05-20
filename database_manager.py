@@ -179,7 +179,7 @@ class DatabaseManager:
     def get_last_total_distance(self):
         """Get the total_distance of the last measurement in the database."""
         if not self.connect():
-            return None
+            return 0.0
 
         query = f"SELECT `total_distance` FROM `{self.db_table}` ORDER BY `timestamp` DESC LIMIT 1"
         try:
@@ -191,7 +191,7 @@ class DatabaseManager:
                 return 0.0
         except Error as e:
             print(f"❌ Failed to fetch last total distance: {e}")
-            return None
+            return 0.0
 
     def get_recent_valid_measurements(self, limit=5):
         """Get recent non-null positive stitch and seam values for fallback buffers."""
