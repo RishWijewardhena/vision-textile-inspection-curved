@@ -82,9 +82,10 @@ class CameraManager:
                     self._handle_reconnect_failure()
                     return None
 
-            for _ in range(25):
-                ret, _ = self.cap.read()
-                if not ret:
+            # Drain a few buffered frames to reduce stale captures without adding long latency.
+            flush_frames = max(0, int(getattr(config, "CAMERA_FLUSH_FRAMES", 2)))
+            for _ in range(flush_frames):
+                if not self.cap.grab():
                     break
 
             ret, frame = self.cap.read()
