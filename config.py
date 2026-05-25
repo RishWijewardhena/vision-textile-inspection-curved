@@ -27,6 +27,7 @@ CAMERA_IDX = config['camera']['index']
 FRAME_W = config['camera']['width']
 FRAME_H = config['camera']['height']
 MAX_RECONNECT_ATTEMPTS = int(config.get('camera', {}).get('max_reconnect_attempts', 3))
+CAMERA_FLUSH_FRAMES = int(config.get('camera', {}).get('flush_frames', 2))
 OUTPUT_DIR = config['output']['directory']
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 IMAGE_RETENTION_SECONDS = config['output']['image_retention_seconds']
@@ -67,6 +68,7 @@ RESET_POST_DELAY_SEC=8.0
 DB_INSERT_INTERVAL = config['database']['insert_interval']
 CAPTURE_INTERVAL = config['processing']['capture_interval']
 MIN_DISTANCE_CHANGE_MM = config['processing']['min_distance_change_mm']
+CAPTURE_QUEUE_MAXSIZE = int(config.get('processing', {}).get('capture_queue_maxsize', 1))
 
 # ---------------------------
 # Offsets (from .env)
