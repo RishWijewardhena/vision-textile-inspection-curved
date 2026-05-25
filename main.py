@@ -5,6 +5,7 @@ import os
 import signal
 import sys
 import threading
+from queue import Queue, Empty, Full
 from datetime import datetime
 from collections import deque
 
@@ -260,9 +261,76 @@ def process_fabric_immediate(
         processing_lock.release()
 
 
+def enqueue_capture_job(capture_queue, delta_stitches, heartbeat, skip_db_insert=False):
+    """
+    Enqueue capture work with bounded memory and deterministic behavior.
+    If full, drop the oldest pending job and keep the newest one.
+    """
+    job = {
+        "delta_stitches": delta_stitches,
+        "skip_db_insert": skip_db_insert,
+        "heartbeat": heartbeat,
+        "scheduled_mono": time.monotonic(),
+    }
+
+    try:
+        capture_queue.put_nowait(job)
+        return True
+    except Full:
+        try:
+            capture_queue.get_nowait()
+            capture_queue.task_done()
+            print("Capture queue full - dropped oldest pending job")
+        except Empty:
+            pass
+
+        try:
+            capture_queue.put_nowait(job)
+            return True
+        except Full:
+            print("Capture queue still full - dropping newest job")
+            return False
 
 
-def serial_monitor_thread(serial_communicator, image_processor, camera_manager, db_manager, session_output_dir, heartbeat):
+def processing_worker_thread(
+    capture_queue,
+    image_processor,
+    camera_manager,
+    serial_communicator,
+    db_manager,
+    session_output_dir,
+):
+    """Single worker that processes capture jobs sequentially."""
+    print("[INFO] Processing worker thread started")
+
+    while not shutdown_event.is_set():
+        try:
+            job = capture_queue.get(timeout=0.2)
+        except Empty:
+            continue
+
+        try:
+            lag_sec = time.monotonic() - job["scheduled_mono"]
+            if lag_sec > config.CAPTURE_INTERVAL:
+                print(f"[WARN] Capture job lag: {lag_sec:.2f}s")
+
+            process_fabric_immediate(
+                image_processor,
+                camera_manager,
+                serial_communicator,
+                db_manager,
+                session_output_dir,
+                job["delta_stitches"],
+                job["heartbeat"],
+                job["skip_db_insert"],
+            )
+        finally:
+            capture_queue.task_done()
+
+
+
+
+def serial_monitor_thread(serial_communicator, image_processor, camera_manager, db_manager, capture_queue, heartbeat):
     """
     Thread that monitors serial for stitch count / distance updates
     and triggers image processing when distance change criteria are met.
@@ -274,6 +342,7 @@ def serial_monitor_thread(serial_communicator, image_processor, camera_manager, 
     previous_stitch_count = serial_communicator.read_serial_data()
     pending_delta_stitches = 0
     waiting_log_last_time = 0.0
+    next_capture_mono = time.monotonic()
 
     while not shutdown_event.is_set():
         try:
@@ -298,32 +367,24 @@ def serial_monitor_thread(serial_communicator, image_processor, camera_manager, 
                 else:
                     print(f"Stitch count decreased ({delta}); ignoring this sample")
 
-            current_time = time.time()
+            now_mono = time.monotonic()
 
-            if current_time - last_capture_time >= config.CAPTURE_INTERVAL:
+            if now_mono >= next_capture_mono:
                 print(
                     f"(Distance: {serial_communicator.current_total_distance:.2f}mm, "
                     f"Interval: {config.CAPTURE_INTERVAL:.2f}s)"
                 )
 
-                processing_thread = threading.Thread(
-                    target=process_fabric_immediate,
-                    args=(
-                        image_processor,
-                        camera_manager,
-                        serial_communicator,
-                        db_manager,
-                        session_output_dir,
-                        pending_delta_stitches,
-                        heartbeat,
-                    ),
-                    daemon=True
+                enqueue_capture_job(
+                    capture_queue,
+                    pending_delta_stitches,
+                    heartbeat,
+                    False,
                 )
-                processing_thread.start()
-
-                last_capture_time = current_time
                 last_processed_distance = serial_communicator.current_total_distance
                 pending_delta_stitches = 0
+                while next_capture_mono <= now_mono:
+                    next_capture_mono += config.CAPTURE_INTERVAL
 
 
             time.sleep(0.01)
@@ -338,7 +399,7 @@ def fallback_capture_thread(
     camera_manager,
     serial_communicator,
     db_manager,
-    session_output_dir,
+    capture_queue,
     heartbeat,
     stop_event,
 ):
@@ -347,10 +408,12 @@ def fallback_capture_thread(
 
     print("[INFO] Fallback capture thread started (serial unavailable)")
 
+    next_capture_mono = time.monotonic()
+
     while not shutdown_event.is_set() and not stop_event.is_set():
         try:
-            current_time = time.time()
-            if current_time - last_capture_time >= config.CAPTURE_INTERVAL:
+            now_mono = time.monotonic()
+            if now_mono >= next_capture_mono:
                 print(
                     f"\nFALLBACK CAPTURE TRIGGERED "
                     f"(Distance: {serial_communicator.current_total_distance:.2f}mm, "
@@ -364,23 +427,14 @@ def fallback_capture_thread(
                     except Exception as exc:
                         print(f"MQTT ESP32 issue publish failed: {exc}")
 
-                processing_thread = threading.Thread(
-                    target=process_fabric_immediate,
-                    args=(
-                        image_processor,
-                        camera_manager,
-                        serial_communicator,
-                        db_manager,
-                        session_output_dir,
-                        0,
-                        heartbeat,
-                        True,
-                    ),
-                    daemon=True,
+                enqueue_capture_job(
+                    capture_queue,
+                    0,
+                    heartbeat,
+                    True,
                 )
-                processing_thread.start()
-
-                last_capture_time = current_time
+                while next_capture_mono <= now_mono:
+                    next_capture_mono += config.CAPTURE_INTERVAL
 
             time.sleep(0.05)
         except Exception as e:
@@ -560,18 +614,37 @@ def main():
 
 
     threads = []
+    capture_queue = Queue(maxsize=getattr(config, "CAPTURE_QUEUE_MAXSIZE", 1))
     serial_thread = None
     fallback_thread = None
+    worker_thread = None
     fallback_stop_event = threading.Event()
     fallback_active = False
     serial_active = False
     last_serial_probe_time = 0.0
     serial_probe_interval_sec = 1.0
 
+    # Single worker keeps processing serialized and avoids thread churn/skips.
+    worker_thread = threading.Thread(
+        target=processing_worker_thread,
+        args=(
+            capture_queue,
+            image_processor,
+            camera_manager,
+            serial_communicator,
+            db_manager,
+            session_output_dir,
+        ),
+        daemon=True,
+    )
+    worker_thread.start()
+    threads.append(worker_thread)
+    print("Processing worker thread started")
+
     if serial_communicator.serial_port is not None:
         serial_thread = threading.Thread(
             target=serial_monitor_thread,
-            args=(serial_communicator, image_processor, camera_manager, db_manager, session_output_dir, heartbeat),
+            args=(serial_communicator, image_processor, camera_manager, db_manager, capture_queue, heartbeat),
             daemon=True,
         )
         serial_thread.start()
@@ -587,7 +660,7 @@ def main():
                 camera_manager,
                 serial_communicator,
                 db_manager,
-                session_output_dir,
+                capture_queue,
                 heartbeat,
                 fallback_stop_event,
             ),
@@ -634,7 +707,7 @@ def main():
                                 image_processor,
                                 camera_manager,
                                 db_manager,
-                                session_output_dir,
+                                capture_queue,
                                 heartbeat,
                             ),
                             daemon=True,
