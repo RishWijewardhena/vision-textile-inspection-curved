@@ -22,55 +22,61 @@ Key data and configuration inputs:
 
 ```mermaid
 flowchart TD
-    %% Entry
-    A[process_frame(frame, current_total_distance)] --> B{frame is None?}
-    B -- Yes --> C[Return (None, summary with camera_issue=True, None)]
+    A[process_frame input frame and current_total_distance] --> B{frame is missing}
+    B -- Yes --> C[Return None and summary with camera_issue True]
     B -- No --> D[Convert BGR to RGB]
-    D --> E[Run model inference -> results[0]]
-    E --> F[Build predictions array from boxes with conf >= 0.3]
-    F --> G[calculate_stitch_edge_distances_vote(result)]
-    G --> H[calculate_measurements(preds, dist_res)]
-    H --> I[annotated = result.plot(masks=False)]
-    I --> J[Overlay edge_map + edge_line_points]
-    J --> K[Draw stitch centers + stitch length labels]
-    K --> L[Draw text overlays: total distance, avg stitch length, avg seam allowance]
-    L --> M[Build results_summary]
-    M --> N[Update last_avg_* + last_processed_time]
-    N --> O[Return annotated, results_summary, result]
+    D --> E[Run model inference results 0]
+    E --> F[Build predictions from boxes with conf 0.3 or higher]
+    F --> G[calculate_stitch_edge_distances_vote]
+    G --> H[calculate_measurements]
+    H --> I[Plot annotations without masks]
+    I --> J[Overlay edge map and edge line points]
+    J --> K[Draw stitch centers and stitch length labels]
+    K --> L[Draw text overlays]
+    L --> M[Build results summary]
+    M --> N[Update last avg values and last processed time]
+    N --> O[Return annotated frame summary and result]
 
-    %% Vote selector
-    subgraph Vote[calculate_stitch_edge_distances_vote]
-        V1[Run YOLO segmentation distance] --> V2[seg_count]
-        V3[Run Canny envelope distance] --> V4[canny_count]
-        V2 --> V5{seg_count > 0?}
-        V5 -- Yes --> V6[Use segmentation result]
-        V5 -- No --> V7{canny_count > 0?}
-        V7 -- Yes --> V8[Use Canny result]
-        V7 -- No --> V9[Use Canny structure, vote_source = none]
+    subgraph Vote
+        V1[Run YOLO segmentation distance]
+        V2[Run Canny envelope distance]
+        V3[seg count]
+        V4[canny count]
+        V5{seg count greater than zero}
+        V6{canny count greater than zero}
+        V7[Use segmentation result]
+        V8[Use Canny result]
+        V9[Use empty result structure]
+
+        V1 --> V3 --> V5
+        V2 --> V4 --> V6
+        V5 -- Yes --> V7
+        V5 -- No --> V6
+        V6 -- Yes --> V8
+        V6 -- No --> V9
     end
     G --> V1
-    G --> V3
+    G --> V2
 
-    %% YOLO segmentation distance
-    subgraph Seg[calculate_stitch_edge_distances]
+    subgraph Segmentation
         S1[Collect stitch centers in central ROI]
-        S2[Select highest-confidence edge in ROI]
-        S3{stitch_centers < MIN?}
+        S2[Select highest confidence edge in ROI]
+        S3{stitch centers meet minimum}
         S4[Return empty distances]
         S5[Build edge mask from best edge]
-        S6{edge_centers present?}
-        S7[Return avg_distance_mm = None]
-        S8{edge mask available?}
-        S9[Per stitch: perpendicular top-edge distance]
-        S10{any valid distances?}
-        S11[avg_distance_mm from mask distances]
-        S12[Fallback to top edge y-line]
-        S13[avg_distance_mm from y-line distances]
-        S14[Build edge_line_points + return]
+        S6{edge centers present}
+        S7[Return avg distance None]
+        S8{edge mask available}
+        S9[Per stitch find perpendicular top edge]
+        S10{any distances}
+        S11[Average distance from mask]
+        S12[Fallback to top edge y line]
+        S13[Average distance from y line]
+        S14[Build edge line points and return]
 
         S1 --> S2 --> S3
-        S3 -- Yes --> S4
-        S3 -- No --> S5 --> S6
+        S3 -- No --> S4
+        S3 -- Yes --> S5 --> S6
         S6 -- No --> S7
         S6 -- Yes --> S8
         S8 -- Yes --> S9 --> S10
@@ -78,55 +84,52 @@ flowchart TD
         S10 -- No --> S12 --> S13 --> S14
         S8 -- No --> S12
     end
-    V6 --> S1
+    V7 --> S1
 
-    %% Canny envelope distance
-    subgraph Can[calculate_stitch_edge_distances_canny]
+    subgraph CannyDistance
         C1[Collect stitch centers in central ROI]
-        C2{stitch_centers < MIN?}
+        C2{stitch centers meet minimum}
         C3[Return empty distances]
-        C4[detect_fabric_edge_canny(frame)]
-        C5[Compute envelope: bottommost edge per column]
-        C6[Per stitch: distance to envelope column]
-        C7{any distances?}
-        C8[avg_distance_mm from envelope distances]
+        C4[detect_fabric_edge_canny]
+        C5[Compute envelope bottommost edge per column]
+        C6[Per stitch distance to envelope column]
+        C7{any distances}
+        C8[Average distance from envelope]
         C9[Fallback to mean envelope y]
-        C10[Return distances + edge_map + edge_line_points]
+        C10[Return distances edge map and line points]
 
         C1 --> C2
-        C2 -- Yes --> C3
-        C2 -- No --> C4 --> C5 --> C6 --> C7
+        C2 -- No --> C3
+        C2 -- Yes --> C4 --> C5 --> C6 --> C7
         C7 -- Yes --> C8 --> C10
         C7 -- No --> C9 --> C10
     end
     V8 --> C1
     V9 --> C1
 
-    %% Canny edge detection details
-    subgraph Edge[detect_fabric_edge_canny]
-        E1[Grayscale + Gaussian blur]
+    subgraph CannyEdge
+        E1[Grayscale and Gaussian blur]
         E2[Canny edge detection]
         E3[Optional dilation]
-        E4[Filter contours: keep long edges]
+        E4[Filter contours keep long edges]
         E5[Apply ROI mask]
-        E6[Lower envelope: bottommost edge per column]
+        E6[Lower envelope bottommost edge per column]
         E7[Median smoothing]
-        E8[Return envelope, edge_map, roi_rect]
+        E8[Return envelope edge map roi rect]
         E1 --> E2 --> E3 --> E4 --> E5 --> E6 --> E7 --> E8
     end
     C4 --> E1
 
-    %% Measurement details
-    subgraph Meas[calculate_measurements]
-        M1[Seam allowance = avg_distance_mm + SEAM_ALLOWANCE_OFFSET_MM]
-        M2[Per stitch: length = max(width, height) * mm_per_pixel]
-        M3[Adjusted length = length + STITCH_LENGTH_OFFSET_MM]
-        M4{stitch count < MIN?}
-        M5[avg_stitch_length_mm = None]
-        M6[avg_stitch_length_mm = mean(adjusted lengths)]
+    subgraph Measurements
+        M1[Seam allowance from avg distance plus offset]
+        M2[Per stitch length from max width height]
+        M3[Adjusted length with offset]
+        M4{stitch count meets minimum}
+        M5[Average stitch length None]
+        M6[Average stitch length from adjusted values]
         M1 --> M2 --> M3 --> M4
-        M4 -- Yes --> M5
-        M4 -- No --> M6
+        M4 -- No --> M5
+        M4 -- Yes --> M6
     end
     H --> M1
 ```
