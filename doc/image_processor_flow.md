@@ -22,31 +22,31 @@ Key data and configuration inputs:
 
 ```mermaid
 flowchart TD
-    A[process_frame input frame and current_total_distance] --> B{frame is missing}
-    B -- Yes --> C[Return None and summary with camera_issue True]
+    A[Process frame input] --> B{Frame missing}
+    B -- Yes --> C[Return no frame and camera issue summary]
     B -- No --> D[Convert BGR to RGB]
-    D --> E[Run model inference results 0]
-    E --> F[Build predictions from boxes with conf 0.3 or higher]
-    F --> G[calculate_stitch_edge_distances_vote]
-    G --> H[calculate_measurements]
+    D --> E[Run model inference]
+    E --> F[Build predictions from boxes]
+    F --> G[Vote on distance method]
+    G --> H[Calculate measurements]
     H --> I[Plot annotations without masks]
-    I --> J[Overlay edge map and edge line points]
-    J --> K[Draw stitch centers and stitch length labels]
+    I --> J[Overlay edge map and edge line]
+    J --> K[Draw stitch centers and length labels]
     K --> L[Draw text overlays]
     L --> M[Build results summary]
-    M --> N[Update last avg values and last processed time]
-    N --> O[Return annotated frame summary and result]
+    M --> N[Update last values and time]
+    N --> O[Return annotated frame and summary]
 
     subgraph Vote
-        V1[Run YOLO segmentation distance]
-        V2[Run Canny envelope distance]
-        V3[seg count]
-        V4[canny count]
-        V5{seg count greater than zero}
-        V6{canny count greater than zero}
+        V1[Run segmentation distance]
+        V2[Run canny distance]
+        V3[Count segmentation distances]
+        V4[Count canny distances]
+        V5{Seg count positive}
+        V6{Canny count positive}
         V7[Use segmentation result]
-        V8[Use Canny result]
-        V9[Use empty result structure]
+        V8[Use canny result]
+        V9[Use empty result]
 
         V1 --> V3 --> V5
         V2 --> V4 --> V6
@@ -60,18 +60,18 @@ flowchart TD
 
     subgraph Segmentation
         S1[Collect stitch centers in central ROI]
-        S2[Select highest confidence edge in ROI]
-        S3{stitch centers meet minimum}
+        S2[Select best edge in ROI]
+        S3{Stitch count meets minimum}
         S4[Return empty distances]
-        S5[Build edge mask from best edge]
-        S6{edge centers present}
-        S7[Return avg distance None]
-        S8{edge mask available}
-        S9[Per stitch find perpendicular top edge]
-        S10{any distances}
+        S5[Build edge mask]
+        S6{Edge centers present}
+        S7[Return no average distance]
+        S8{Edge mask available}
+        S9[Distance per stitch using mask]
+        S10{Any valid distances}
         S11[Average distance from mask]
-        S12[Fallback to top edge y line]
-        S13[Average distance from y line]
+        S12[Fallback to top edge line]
+        S13[Average distance from line]
         S14[Build edge line points and return]
 
         S1 --> S2 --> S3
@@ -88,15 +88,15 @@ flowchart TD
 
     subgraph CannyDistance
         C1[Collect stitch centers in central ROI]
-        C2{stitch centers meet minimum}
+        C2{Stitch count meets minimum}
         C3[Return empty distances]
-        C4[detect_fabric_edge_canny]
-        C5[Compute envelope bottommost edge per column]
-        C6[Per stitch distance to envelope column]
-        C7{any distances}
+        C4[Detect fabric edge with canny]
+        C5[Compute envelope bottommost edge]
+        C6[Distance per stitch to envelope]
+        C7{Any distances}
         C8[Average distance from envelope]
-        C9[Fallback to mean envelope y]
-        C10[Return distances edge map and line points]
+        C9[Fallback to mean envelope line]
+        C10[Return distances and edge data]
 
         C1 --> C2
         C2 -- No --> C3
@@ -108,24 +108,24 @@ flowchart TD
     V9 --> C1
 
     subgraph CannyEdge
-        E1[Grayscale and Gaussian blur]
+        E1[Grayscale and blur]
         E2[Canny edge detection]
         E3[Optional dilation]
-        E4[Filter contours keep long edges]
+        E4[Filter long contours]
         E5[Apply ROI mask]
-        E6[Lower envelope bottommost edge per column]
+        E6[Lower envelope bottommost edge]
         E7[Median smoothing]
-        E8[Return envelope edge map roi rect]
+        E8[Return envelope edge map ROI rectangle]
         E1 --> E2 --> E3 --> E4 --> E5 --> E6 --> E7 --> E8
     end
     C4 --> E1
 
     subgraph Measurements
-        M1[Seam allowance from avg distance plus offset]
+        M1[Seam allowance from average distance plus offset]
         M2[Per stitch length from max width height]
-        M3[Adjusted length with offset]
-        M4{stitch count meets minimum}
-        M5[Average stitch length None]
+        M3[Adjust length with offset]
+        M4{Stitch count meets minimum}
+        M5[Average stitch length none]
         M6[Average stitch length from adjusted values]
         M1 --> M2 --> M3 --> M4
         M4 -- No --> M5
@@ -138,36 +138,36 @@ flowchart TD
 
 ```mermaid
 flowchart TD
-    A[process_frame(frame, current_total_distance)] --> B{frame is None?}
-    B -- Yes --> C[Return (None, summary with camera_issue=True, None)]
+    A[Process frame input] --> B{Frame missing}
+    B -- Yes --> C[Return no frame and camera issue summary]
     B -- No --> D[Convert BGR to RGB]
-    D --> E[Run model inference -> results[0]]
-    E --> F[Build predictions array from boxes with conf >= 0.3]
-    F --> G[calculate_stitch_edge_distances_vote(result)]
-    G --> H[calculate_measurements(preds, dist_res)]
-    H --> I[annotated = result.plot(masks=False)]
-    I --> J[Overlay edge_map and edge_line_points (green)]
-    J --> K[Draw stitch centers and stitch length labels]
-    K --> L[Draw text overlays: total distance, avg stitch length, avg seam allowance]
-    L --> M[Build results_summary dict]
-    M --> N[Update last_avg_* if present; set last_processed_time]
-    N --> O[Return annotated, results_summary, result]
+    D --> E[Run model inference]
+    E --> F[Build predictions from boxes]
+    F --> G[Vote on distance method]
+    G --> H[Calculate measurements]
+    H --> I[Plot annotations without masks]
+    I --> J[Overlay edge map and edge line]
+    J --> K[Draw stitch centers and length labels]
+    K --> L[Draw text overlays]
+    L --> M[Build results summary]
+    M --> N[Update last values and time]
+    N --> O[Return annotated frame and summary]
 ```
 
 ## Distance Vote (Segmentation vs Canny)
 
 ```mermaid
 flowchart TD
-    A[calculate_stitch_edge_distances_vote(result)] --> B[seg_res = calculate_stitch_edge_distances(result)]
-    A --> C[canny_res = calculate_stitch_edge_distances_canny(result)]
-    B --> D[seg_count = len(seg_res.all_distances)]
-    C --> E[canny_count = len(canny_res.all_distances)]
-    D --> F{seg_count > 0?}
-    F -- Yes --> G[final = seg_res; vote_source = yolo_segmentation]
-    F -- No --> H{canny_count > 0?}
-    H -- Yes --> I[final = canny_res; vote_source = canny]
-    H -- No --> J[final = canny_res; vote_source = none]
-    G --> K[Return final + both method results]
+    A[Vote on distance method] --> B[Run segmentation distance]
+    A --> C[Run canny distance]
+    B --> D[Count segmentation distances]
+    C --> E[Count canny distances]
+    D --> F{Seg count positive}
+    F -- Yes --> G[Use segmentation result]
+    F -- No --> H{Canny count positive}
+    H -- Yes --> I[Use canny result]
+    H -- No --> J[Use empty result]
+    G --> K[Return selected result]
     I --> K
     J --> K
 ```
@@ -176,53 +176,50 @@ flowchart TD
 
 ```mermaid
 flowchart TD
-    A[calculate_stitch_edge_distances(result)] --> B[Collect stitch centers inside central ROI]
-    B --> C[Pick highest-confidence edge detection inside ROI]
-    C --> D{stitch_centers < MIN_STITCH_DETECTIONS?}
-    D -- Yes --> E[Return empty distances]
-    D -- No --> F[Build combined_edge_mask from best edge mask (if available)]
-    F --> G{edge_centers present?}
-    G -- No --> H[Return with avg_distance_mm = None]
-    G -- Yes --> I{edge mask available?}
-    I -- Yes --> J[For each stitch: find perpendicular top edge in mask]
-    J --> K{any valid distances?}
-    K -- Yes --> L[avg_distance_mm from mask distances]
-    K -- No --> M[Fallback to top edge y-line from edge centers]
-    I -- No --> M
-    M --> N[avg_distance_mm from y-line distances]
-    L --> O[Build edge_line_points and return]
-    N --> O
+    A[Collect stitch centers in central ROI] --> B[Select best edge in ROI]
+    B --> C{Stitch count meets minimum}
+    C -- No --> D[Return empty distances]
+    C -- Yes --> E[Build edge mask]
+    E --> F{Edge centers present}
+    F -- No --> G[Return no average distance]
+    F -- Yes --> H{Edge mask available}
+    H -- Yes --> I[Distance per stitch using mask]
+    I --> J{Any valid distances}
+    J -- Yes --> K[Average distance from mask]
+    J -- No --> L[Fallback to top edge line]
+    H -- No --> L
+    L --> M[Average distance from line]
+    K --> N[Build edge line points and return]
+    M --> N
 ```
 
 ## Canny Envelope Distance Flow
 
 ```mermaid
 flowchart TD
-    A[calculate_stitch_edge_distances_canny(result)] --> B[Collect stitch centers inside central ROI]
-    B --> C{stitch_centers < MIN_STITCH_DETECTIONS?}
-    C -- Yes --> D[Return empty distances]
-    C -- No --> E[detect_fabric_edge_canny(frame)]
-    E --> F[Compute envelope: bottommost edge per column]
-    F --> G[For each stitch: distance to envelope column]
-    G --> H{any distances?}
-    H -- Yes --> I[avg_distance_mm from envelope distances]
-    H -- No --> J[Fallback to mean envelope y]
-    I --> K[Return distances + edge_map + edge_line_points]
-    J --> K
+    A[Collect stitch centers in central ROI] --> B{Stitch count meets minimum}
+    B -- No --> C[Return empty distances]
+    B -- Yes --> D[Detect fabric edge with canny]
+    D --> E[Compute envelope bottommost edge]
+    E --> F[Distance per stitch to envelope]
+    F --> G{Any distances}
+    G -- Yes --> H[Average distance from envelope]
+    G -- No --> I[Fallback to mean envelope line]
+    H --> J[Return distances and edge data]
+    I --> J
 ```
 
 ## Canny Edge Detection Flow
 
 ```mermaid
 flowchart TD
-    A[detect_fabric_edge_canny(frame)] --> B[Convert to grayscale + Gaussian blur]
-    B --> C[Canny edge detection]
-    C --> D[Optional dilation to bridge gaps]
-    D --> E[Find contours and keep long ones]
-    E --> F[Apply ROI mask]
-    F --> G[Lower envelope: bottommost edge per column]
-    G --> H[Median smoothing on envelope]
-    H --> I[Return envelope, edge_map, roi_rect]
+    A[Grayscale and blur] --> B[Canny edge detection]
+    B --> C[Optional dilation]
+    C --> D[Filter long contours]
+    D --> E[Apply ROI mask]
+    E --> F[Lower envelope bottommost edge]
+    F --> G[Median smoothing]
+    G --> H[Return envelope edge map ROI rectangle]
 ```
 
 ## Measurement Details (Text Summary)
