@@ -26,10 +26,22 @@ processing:
   capture_interval: 2.0 # seconds
   min_distance_change_mm: 5.0
   capture_queue_maxsize: 1
+  seg_outer_edge_max_steps: 200
+
+edge_detection:
+  canny_low: 50
+  canny_high: 180
+  blur_kernel: 7
+  dilate_kernel: 3
+  roi_top_fraction: 0.0
+  roi_bottom_fraction: 1.0
+  roi_left_fraction: 0.0
+  roi_right_fraction: 0.9
+  envelope_smooth_kernel: 5
 
 ideal_ranges:
   seam_allowance_mm_min: 5.0
-  seam_allowance_mm_max: 7.5
+  seam_allowance_mm_max: 8.0
   stitch_length_mm_min: 2.6
   stitch_length_mm_max: 4.4
 
