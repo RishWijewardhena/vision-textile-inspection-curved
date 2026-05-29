@@ -73,10 +73,10 @@ class DatabaseManager:
             return False
 
         if stitch_length is None or seam_allowance is None or total_distance is None:
-            print(
-                " Skipping DB insert: real measurement missing "
-                f"(stitch_length={stitch_length}, seam_allowance={seam_allowance}, total_distance={total_distance})"
-            )
+            # print(
+            #     " current  measurement missing "
+            #     f"(stitch_length={stitch_length}, seam_allowance={seam_allowance}, total_distance={total_distance})"
+            # )
             return False
 
         if not ignore_limits:
