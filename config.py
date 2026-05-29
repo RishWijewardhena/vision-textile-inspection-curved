@@ -69,6 +69,22 @@ DB_INSERT_INTERVAL = config['database']['insert_interval']
 CAPTURE_INTERVAL = config['processing']['capture_interval']
 MIN_DISTANCE_CHANGE_MM = config['processing']['min_distance_change_mm']
 CAPTURE_QUEUE_MAXSIZE = int(config.get('processing', {}).get('capture_queue_maxsize', 1))
+MIN_STITCH_DETECTIONS = int(config.get('processing', {}).get('min_stitch_detections', 3))
+SEG_OUTER_EDGE_MAX_STEPS = int(config.get('processing', {}).get('seg_outer_edge_max_steps', 200))
+
+# ---------------------------
+# Edge Detection Configuration
+# ---------------------------
+EDGE_CFG = config.get('edge_detection', {})
+EDGE_CANNY_LOW = int(EDGE_CFG.get('canny_low', 50))
+EDGE_CANNY_HIGH = int(EDGE_CFG.get('canny_high', 180))
+EDGE_BLUR_KERNEL = int(EDGE_CFG.get('blur_kernel', 7))
+EDGE_DILATE_KERNEL = int(EDGE_CFG.get('dilate_kernel', 3))
+EDGE_ROI_TOP_FRACTION = float(EDGE_CFG.get('roi_top_fraction', 0.2))
+EDGE_ROI_BOTTOM_FRACTION = float(EDGE_CFG.get('roi_bottom_fraction', 0.8))
+EDGE_ROI_LEFT_FRACTION = float(EDGE_CFG.get('roi_left_fraction', 0.2))
+EDGE_ROI_RIGHT_FRACTION = float(EDGE_CFG.get('roi_right_fraction', 0.8))
+EDGE_ENVELOPE_SMOOTH_KERNEL = int(EDGE_CFG.get('envelope_smooth_kernel', 5))
 
 # ---------------------------
 # Offsets (from .env)
@@ -87,7 +103,7 @@ IDEAL_STITCH_LENGTH_MM_MAX = config['ideal_ranges']['stitch_length_mm_max']
 # ---------------------------
 # Confirmed Override Parameters
 # ---------------------------
-CONFIRM_CONSECUTIVE = 4  # number of consecutive out-of-range measurements to treat as valid
+CONFIRM_CONSECUTIVE = 6  # number of consecutive out-of-range measurements to treat as valid
 CONFIRM_TOLERANCE_MM = 0.75  # mm — how close consecutive out-of-range samples must be to the limit
 
 # ---------------------------
