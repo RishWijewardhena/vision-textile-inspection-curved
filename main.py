@@ -158,7 +158,7 @@ def process_fabric_immediate(
         if stitch_length is not None or seam_allowance is not None:
             stitch_fmt = f"{stitch_length:.2f}mm" if stitch_length is not None else "N/A"
             seam_fmt = f"{seam_allowance:.2f}mm" if seam_allowance is not None else "N/A"
-            print(f"✅ FABRIC ANALYSIS ({log_ts()}): Distance {total_distance:.2f}mm | Edges {summary['edge_count']} | Stitch {stitch_fmt} | Seam {seam_fmt} | Time {processing_time:.2f}s")
+            print(f" FABRIC ANALYSIS ({log_ts()}): Distance {total_distance:.2f}mm | Edges {summary['edge_count']} | Stitch {stitch_fmt} | Seam {seam_fmt} | Time {processing_time:.2f}s")
         else:
             print(f"[{log_ts()}] Unable to obtain measurements from frame")
 
@@ -168,28 +168,26 @@ def process_fabric_immediate(
         if seam_allowance is not None:
             raw_seam_history.append(seam_allowance)
 
-        # Keep a rolling buffer of valid real measurements.
-        if is_stitch_length_in_ideal_range(stitch_length):
+        # Keep a rolling buffer of raw measurements (in or out of range).
+        if stitch_length is not None:
             stitch_length_buffer.append(float(stitch_length))
-        if is_seam_allowance_in_ideal_range(seam_allowance):
+        if seam_allowance is not None:
             seam_allowance_buffer.append(float(seam_allowance))
 
-        # If we moved forward (delta>0) but this frame missed a measurement,
-        # fall back to mean of recent valid real measurements.
-        if delta_stitches > 0:
-            if stitch_length is None and stitch_length_buffer:
-                stitch_length = sum(stitch_length_buffer) / len(stitch_length_buffer)
-                print(
-                    f"Using buffered stitch_length mean: {stitch_length:.3f}mm "
-                    f"from {len(stitch_length_buffer)} samples"
-                )
+        # If this frame missed a measurement, fall back to mean of recent samples.
+        if stitch_length is None and stitch_length_buffer:
+            stitch_length = sum(stitch_length_buffer) / len(stitch_length_buffer)
+            print(
+                f"Using buffered stitch_length mean: {stitch_length:.3f}mm "
+                f"from {len(stitch_length_buffer)} samples"
+            )
 
-            if seam_allowance is None and seam_allowance_buffer:
-                seam_allowance = sum(seam_allowance_buffer) / len(seam_allowance_buffer)
-                print(
-                    f"Using buffered seam_allowance mean: {seam_allowance:.3f}mm "
-                    f"from {len(seam_allowance_buffer)} samples"
-                )
+        if seam_allowance is None and seam_allowance_buffer:
+            seam_allowance = sum(seam_allowance_buffer) / len(seam_allowance_buffer)
+            print(
+                f"Using buffered seam_allowance mean: {seam_allowance:.3f}mm "
+                f"from {len(seam_allowance_buffer)} samples"
+            )
 
         confirmed_override = False
 
@@ -219,6 +217,22 @@ def process_fabric_immediate(
                     confirmed_override = True
                     print(log_ts() + f" Seam allowance below {config.IDEAL_SEAM_ALLOWANCE_MM_MIN}mm but sustained for {config.CONFIRM_CONSECUTIVE} samples - accepting as valid")
 
+        # If out-of-range and not confirmed, replace with buffer mean when available.
+        if not confirmed_override:
+            if stitch_length is not None and not is_stitch_length_in_ideal_range(stitch_length) and stitch_length_buffer:
+                stitch_length = sum(stitch_length_buffer) / len(stitch_length_buffer)
+                print(
+                    f"Using buffered stitch_length mean: {stitch_length:.3f}mm "
+                    f"from {len(stitch_length_buffer)} samples (out-of-range)"
+                )
+
+            if seam_allowance is not None and not is_seam_allowance_in_ideal_range(seam_allowance) and seam_allowance_buffer:
+                seam_allowance = sum(seam_allowance_buffer) / len(seam_allowance_buffer)
+                print(
+                    f"Using buffered seam_allowance mean: {seam_allowance:.3f}mm "
+                    f"from {len(seam_allowance_buffer)} samples (out-of-range)"
+                )
+
         # Final safety filter before persistence: reject out-of-range values UNLESS confirmed by override
         if stitch_length is not None and not is_stitch_length_in_ideal_range(stitch_length) and not confirmed_override:
             print(
@@ -238,20 +252,23 @@ def process_fabric_immediate(
             )
             seam_allowance = None
 
-
+        if confirmed_override:
+            print(log_ts() + " Confirmed override applied - proceeding with insert")
         ok = False
-        if not skip_db_insert:
+        if not skip_db_insert and delta_stitches > 0:
             ok = db_manager.insert_measurement(
                 stitch_length=stitch_length,
                 seam_allowance=seam_allowance,
-                total_distance=total_distance
+                total_distance=total_distance,
+                ignore_limits=confirmed_override,
             )
 
             if ok:
                 print("✅ MySQL insert done (per-frame)")
             else:
-                print("MySQL insert skipped (per-frame)")
-        else:
+                # print("MySQL insert skipped (per-frame)")
+                pass
+        elif skip_db_insert:
             print("Skipping DB insert (fallback mode - no ESP32 connection)")
 
     except Exception as e:
