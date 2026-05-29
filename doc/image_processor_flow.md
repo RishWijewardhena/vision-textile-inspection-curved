@@ -8,7 +8,7 @@ The ImageProcessor class performs these jobs for each camera frame:
 
 - Run YOLO inference to detect stitches and edges.
 - Compute stitch length and seam allowance (stitch-to-edge distance).
-- Choose the best edge distance source (YOLO segmentation first, Canny fallback).
+- Choose the best edge distance source (YOLO segmentation first; run Canny only if segmentation yields no distances).
 - Overlay measurements and edge visuals on the output frame.
 - Export results for display and for the database thread.
 
@@ -16,7 +16,7 @@ Key data and configuration inputs:
 
 - mm_per_pixel from calibration (pixel to mm conversion).
 - Thresholds and offsets from config (min detections, offsets, ideal ranges).
-- ROI filtering: only the central 50 percent of the frame is used for stitch/edge centers.
+- ROI filtering: EDGE_ROI_* bounds from config are used for stitch/edge centers.
 
 ## Full End-to-End Flowchart
 
@@ -39,24 +39,21 @@ flowchart TD
 
     subgraph Vote
         V1[Run segmentation distance]
-        V2[Run canny distance]
-        V3[Count segmentation distances]
-        V4[Count canny distances]
-        V5{Seg count positive}
+        V2[Count segmentation distances]
+        V3{Seg count positive}
+        V4[Use segmentation result]
+        V5[Run canny distance]
         V6{Canny count positive}
-        V7[Use segmentation result]
-        V8[Use canny result]
-        V9[Use empty result]
+        V7[Use canny result]
+        V8[Use empty result]
 
-        V1 --> V3 --> V5
-        V2 --> V4 --> V6
-        V5 -- Yes --> V7
-        V5 -- No --> V6
-        V6 -- Yes --> V8
-        V6 -- No --> V9
+        V1 --> V2 --> V3
+        V3 -- Yes --> V4
+        V3 -- No --> V5 --> V6
+        V6 -- Yes --> V7
+        V6 -- No --> V8
     end
     G --> V1
-    G --> V2
 
     subgraph Segmentation
         S1[Collect stitch centers in central ROI]
@@ -91,7 +88,7 @@ flowchart TD
         C2{Stitch count meets minimum}
         C3[Return empty distances]
         C4[Detect fabric edge with canny]
-        C5[Compute envelope bottommost edge]
+        C5[Compute envelope rightmost edge]
         C6[Distance per stitch to envelope]
         C7{Any distances}
         C8[Average distance from envelope]
@@ -113,7 +110,7 @@ flowchart TD
         E3[Optional dilation]
         E4[Filter long contours]
         E5[Apply ROI mask]
-        E6[Lower envelope bottommost edge]
+        E6[Rightmost envelope per row]
         E7[Median smoothing]
         E8[Return envelope edge map ROI rectangle]
         E1 --> E2 --> E3 --> E4 --> E5 --> E6 --> E7 --> E8
@@ -159,17 +156,16 @@ flowchart TD
 ```mermaid
 flowchart TD
     A[Vote on distance method] --> B[Run segmentation distance]
-    A --> C[Run canny distance]
-    B --> D[Count segmentation distances]
-    C --> E[Count canny distances]
-    D --> F{Seg count positive}
-    F -- Yes --> G[Use segmentation result]
-    F -- No --> H{Canny count positive}
-    H -- Yes --> I[Use canny result]
-    H -- No --> J[Use empty result]
-    G --> K[Return selected result]
-    I --> K
-    J --> K
+    B --> C[Count segmentation distances]
+    C --> D{Seg count positive}
+    D -- Yes --> E[Use segmentation result]
+    D -- No --> F[Run canny distance]
+    F --> G{Canny count positive}
+    G -- Yes --> H[Use canny result]
+    G -- No --> I[Use empty result]
+    E --> J[Return selected result]
+    H --> J
+    I --> J
 ```
 
 ## YOLO Segmentation Distance Flow
@@ -200,7 +196,7 @@ flowchart TD
     A[Collect stitch centers in central ROI] --> B{Stitch count meets minimum}
     B -- No --> C[Return empty distances]
     B -- Yes --> D[Detect fabric edge with canny]
-    D --> E[Compute envelope bottommost edge]
+    D --> E[Compute envelope rightmost edge]
     E --> F[Distance per stitch to envelope]
     F --> G{Any distances}
     G -- Yes --> H[Average distance from envelope]
@@ -217,7 +213,7 @@ flowchart TD
     B --> C[Optional dilation]
     C --> D[Filter long contours]
     D --> E[Apply ROI mask]
-    E --> F[Lower envelope bottommost edge]
+    E --> F[Rightmost envelope per row]
     F --> G[Median smoothing]
     G --> H[Return envelope edge map ROI rectangle]
 ```
