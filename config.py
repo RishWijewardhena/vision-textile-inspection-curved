@@ -71,6 +71,8 @@ MIN_DISTANCE_CHANGE_MM = config['processing']['min_distance_change_mm']
 CAPTURE_QUEUE_MAXSIZE = int(config.get('processing', {}).get('capture_queue_maxsize', 1))
 MIN_STITCH_DETECTIONS = int(config.get('processing', {}).get('min_stitch_detections', 3))
 SEG_OUTER_EDGE_MAX_STEPS = int(config.get('processing', {}).get('seg_outer_edge_max_steps', 200))
+STITCH_LINE_FILTER_THRESHOLD_MM = float(config.get('processing', {}).get('stitch_line_filter_threshold_mm', 3.5))
+MAD_STITCH_LENGTH_Z_THRESH = float(config.get('processing', {}).get('mad_stitch_length_z_thresh', 1.3))
 
 # ---------------------------
 # Edge Detection Configuration
