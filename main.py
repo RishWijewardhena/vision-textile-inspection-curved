@@ -168,10 +168,10 @@ def process_fabric_immediate(
         if seam_allowance is not None:
             raw_seam_history.append(seam_allowance)
 
-        # Keep a rolling buffer of raw measurements (in or out of range).
-        if stitch_length is not None:
+        # Keep fallback buffers valid-only; raw histories above keep out-of-range samples.
+        if is_stitch_length_in_ideal_range(stitch_length):
             stitch_length_buffer.append(float(stitch_length))
-        if seam_allowance is not None:
+        if is_seam_allowance_in_ideal_range(seam_allowance):
             seam_allowance_buffer.append(float(seam_allowance))
 
         # If this frame missed a measurement, fall back to mean of recent samples.
