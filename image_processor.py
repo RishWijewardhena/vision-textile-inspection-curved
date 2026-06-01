@@ -238,8 +238,6 @@ class ImageProcessor:
             contour_poly.append(contour_poly[0])
 
         all_distances = []
-        total_distance_mm = 0.0
-        valid_distance_count = 0
 
         max_steps = int(getattr(config, "SEG_OUTER_EDGE_MAX_STEPS", max(mask_w, mask_h)))
         max_steps = max(1, min(max_steps, int(max(mask_w, mask_h))))
@@ -249,6 +247,20 @@ class ImageProcessor:
             if closest is None:
                 continue
             inner_x, inner_y, _ = closest
+
+            # Local Window Tangent Fitting
+            local_pts = contour_points[np.abs(contour_points[:, 1] - inner_y) < 100]
+            if len(local_pts) >= 2:
+                [vx, vy, x0, y0] = cv2.fitLine(local_pts, cv2.DIST_L2, 0, 0.01, 0.01)
+                vx = float(vx[0])
+                vy = float(vy[0])
+                x0 = float(x0[0])
+                y0 = float(y0[0])
+                
+                # Project stitch center onto the local line
+                t = (cx - x0) * vx + (cy - y0) * vy
+                inner_x = x0 + t * vx
+                inner_y = y0 + t * vy
 
             vec_x = inner_x - cx
             vec_y = inner_y - cy
@@ -275,8 +287,6 @@ class ImageProcessor:
             edge_point = (int(round(outer_x)), int(round(outer_y)))
             distance_pixels = float(np.hypot(outer_x - cx, outer_y - cy))
             distance_mm = distance_pixels * self.mm_per_pixel
-            total_distance_mm += distance_mm
-            valid_distance_count += 1
 
             all_distances.append({
                 'stitch_center': stitch_center,
@@ -286,7 +296,17 @@ class ImageProcessor:
                 'distance_mm': distance_mm
             })
 
-        avg_distance_mm = total_distance_mm / valid_distance_count if valid_distance_count > 0 else None
+        if len(all_distances) > 0:
+            min_dist_mm = min(d['distance_mm'] for d in all_distances)
+            thresh = getattr(config, "STITCH_LINE_FILTER_THRESHOLD_MM", 3.5)
+            filtered_distances = [d for d in all_distances if d['distance_mm'] <= min_dist_mm + thresh]
+            
+            valid_distance_count = len(filtered_distances)
+            total_distance_mm = sum(d['distance_mm'] for d in filtered_distances)
+            avg_distance_mm = total_distance_mm / valid_distance_count if valid_distance_count > 0 else None
+            all_distances = filtered_distances
+        else:
+            avg_distance_mm = None
 
         return {
             'stitch_centers': stitch_centers,
@@ -473,8 +493,7 @@ class ImageProcessor:
             edge_line_points = None
 
         all_distances = []
-        total_distance_mm = 0.0
-        valid_distance_count = 0
+        edge_pts_arr = np.array(edge_line_points) if edge_line_points else None
 
         # 3. Calculate distances using the envelope
         for cx, cy in stitch_centers:
@@ -486,12 +505,26 @@ class ImageProcessor:
                 if closest is None:
                     continue
                 edge_x, edge_y, dist2 = closest
-                distance_pixels = float(np.sqrt(dist2))
+
+                # Local Window Tangent Fitting for Canny
+                local_pts = edge_pts_arr[np.abs(edge_pts_arr[:, 1] - edge_y) < 100]
+                if len(local_pts) >= 2:
+                    [vx, vy, x0, y0] = cv2.fitLine(local_pts.astype(np.float32), cv2.DIST_L2, 0, 0.01, 0.01)
+                    vx = float(vx[0])
+                    vy = float(vy[0])
+                    x0 = float(x0[0])
+                    y0 = float(y0[0])
+                
+                    # Project stitch center onto the local line
+                    t = (cx - x0) * vx + (cy - y0) * vy
+                    edge_x = x0 + t * vx
+                    edge_y = y0 + t * vy
+                    distance_pixels = float(np.hypot(edge_x - cx, edge_y - cy))
+                else:
+                    distance_pixels = float(np.sqrt(dist2))
+
                 distance_mm = distance_pixels * self.mm_per_pixel
                 edge_point = (int(round(edge_x)), int(round(edge_y)))
-
-                total_distance_mm += distance_mm
-                valid_distance_count += 1
 
                 all_distances.append({
                     'stitch_center': (cx, cy),
@@ -501,8 +534,18 @@ class ImageProcessor:
                     'distance_mm': float(distance_mm)
                 })
 
-        # 4. Final aggregation
-        avg_distance_mm = total_distance_mm / valid_distance_count if valid_distance_count > 0 else None
+        # 4. Final aggregation with minimum distance filter
+        if len(all_distances) > 0:
+            min_dist_mm = min(d['distance_mm'] for d in all_distances)
+            thresh = getattr(config, "STITCH_LINE_FILTER_THRESHOLD_MM", 3.5)
+            filtered_distances = [d for d in all_distances if d['distance_mm'] <= min_dist_mm + thresh]
+            
+            valid_distance_count = len(filtered_distances)
+            total_distance_mm = sum(d['distance_mm'] for d in filtered_distances)
+            avg_distance_mm = total_distance_mm / valid_distance_count if valid_distance_count > 0 else None
+            all_distances = filtered_distances
+        else:
+            avg_distance_mm = None
 
         # Optional: Logic to handle cases where no edges were found in stitch columns
         if avg_distance_mm is None:
@@ -614,7 +657,7 @@ class ImageProcessor:
 
         # Process stitch lengths from predictions
         stitch_lengths = []
-        adjusted_stitch_lengths_mm = []
+        raw_adjusted_stitch_lengths_mm = []
         if predictions is not None and len(predictions) > 0:
             for x1, y1, x2, y2, conf, cls in predictions:
                 if int(cls) == config.STITCH_CLASS_ID and conf >= 0.3:
@@ -623,20 +666,35 @@ class ImageProcessor:
                     stitch_length_pixels = max(width, height)
                     stitch_length_mm = stitch_length_pixels * self.mm_per_pixel
                     adjusted_stitch_length_mm = stitch_length_mm + config.STITCH_LENGTH_OFFSET_MM
-                    adjusted_stitch_lengths_mm.append(adjusted_stitch_length_mm)
-                    if not self._is_stitch_length_in_ideal_range(adjusted_stitch_length_mm):
-                        print(
-                            "[INFO] stitch length outside ideal range (override check will decide): "
-                            f"{adjusted_stitch_length_mm:.3f}mm "
-
-                        )
-
+                    raw_adjusted_stitch_lengths_mm.append(adjusted_stitch_length_mm)
+                    
                     stitch_lengths.append({
                         'box': (x1, y1, x2, y2),
                         'length_pixels': stitch_length_pixels,
                         'length_mm': stitch_length_mm,
                         'center': ((x1 + x2) / 2, (y1 + y2) / 2)
                     })
+
+        # Apply MAD Filter for Stitch Length
+        adjusted_stitch_lengths_mm = []
+        if len(raw_adjusted_stitch_lengths_mm) > 0:
+            median_val = np.median(raw_adjusted_stitch_lengths_mm)
+            mad = np.median(np.abs(raw_adjusted_stitch_lengths_mm - median_val))
+            # If all values are identical, mad is 0, avoid division by zero
+            if mad == 0:
+                adjusted_stitch_lengths_mm = raw_adjusted_stitch_lengths_mm
+            else:
+                for length in raw_adjusted_stitch_lengths_mm:
+                    z_score = 0.6745 * abs(length - median_val) / mad
+                    if z_score <= getattr(config, "MAD_STITCH_LENGTH_Z_THRESH", 3.5):
+                        adjusted_stitch_lengths_mm.append(length)
+
+        for adjusted_stitch_length_mm in adjusted_stitch_lengths_mm:
+            if not self._is_stitch_length_in_ideal_range(adjusted_stitch_length_mm):
+                print(
+                    "[INFO] stitch length outside ideal range (override check will decide): "
+                    f"{adjusted_stitch_length_mm:.3f}mm "
+                )
 
         coverage_info["avg_stitch_length_mm"] = (
             sum(adjusted_stitch_lengths_mm) / len(adjusted_stitch_lengths_mm)
