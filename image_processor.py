@@ -89,6 +89,123 @@ class ImageProcessor:
                 best = (cx, cy, dist2)
         return best
 
+    def _outer_edge_point_for_stitch(self, cx, cy, edge_points, binary_mask=None, y_window=100.0):
+        """Return the fabric-side edge point for a stitch.
+
+        If stitches are left of the local edge band, use the right-most edge.
+        If stitches are right of it, use the left-most edge. This keeps seam
+        allowance lines aimed at the outer contour near the background instead
+        of the inner contour nearest to the stitch.
+        """
+        if edge_points is None:
+            return None
+
+        pts = np.asarray(edge_points, dtype=np.float32).reshape(-1, 2)
+        if pts.size == 0:
+            return None
+
+        local_pts = pts[np.abs(pts[:, 1] - float(cy)) <= float(y_window)]
+        if len(local_pts) < 2:
+            local_pts = pts
+
+        local_center_x = float(np.median(local_pts[:, 0]))
+        use_right_edge = float(cx) <= local_center_x
+
+        min_x = float(np.min(local_pts[:, 0]))
+        max_x = float(np.max(local_pts[:, 0]))
+        x_span = max_x - min_x
+        side_band = max(3.0, min(25.0, x_span * 0.20))
+
+        if use_right_edge:
+            side_pts = local_pts[local_pts[:, 0] >= max_x - side_band]
+        else:
+            side_pts = local_pts[local_pts[:, 0] <= min_x + side_band]
+
+        if len(side_pts) < 2:
+            idx = int(np.argmax(local_pts[:, 0]) if use_right_edge else np.argmin(local_pts[:, 0]))
+            edge_x, edge_y = float(local_pts[idx, 0]), float(local_pts[idx, 1])
+        else:
+            [vx, vy, x0, y0] = cv2.fitLine(side_pts.astype(np.float32), cv2.DIST_L2, 0, 0.01, 0.01)
+            vx = float(vx[0])
+            vy = float(vy[0])
+            x0 = float(x0[0])
+            y0 = float(y0[0])
+
+            t = (float(cx) - x0) * vx + (float(cy) - y0) * vy
+            side_t = (side_pts[:, 0] - x0) * vx + (side_pts[:, 1] - y0) * vy
+            if len(side_t) > 0:
+                t = float(np.clip(t, np.min(side_t), np.max(side_t)))
+
+            edge_x = x0 + t * vx
+            edge_y = y0 + t * vy
+
+        if binary_mask is not None:
+            mask_h, _ = binary_mask.shape[:2]
+            iy = int(round(edge_y))
+            if 0 <= iy < mask_h:
+                xs = np.flatnonzero(binary_mask[iy])
+                if xs.size > 0:
+                    edge_x = float(xs[-1] if use_right_edge else xs[0])
+                    edge_y = float(iy)
+
+        return float(edge_x), float(edge_y)
+
+    def _contour_to_polyline(self, contour, closed=False):
+        if contour is None or len(contour) < 2:
+            return []
+        arc_len = cv2.arcLength(contour, closed)
+        approx_eps = max(1.0, 0.002 * arc_len)
+        approx = cv2.approxPolyDP(contour, approx_eps, closed)
+        points = approx.reshape(-1, 2).astype(np.float32)
+        polyline = [(float(x), float(y)) for x, y in points]
+        if closed and len(polyline) >= 2 and polyline[0] != polyline[-1]:
+            polyline.append(polyline[0])
+        return polyline
+
+    def _select_fabric_edge_contour(self, contours, stitch_centers, frame_w, frame_h):
+        min_length = max(100.0, frame_h * 0.25)
+        min_span = max(40, int(frame_h * 0.12))
+        candidates = []
+
+        for contour in contours:
+            length = cv2.arcLength(contour, False)
+            if length < min_length:
+                continue
+
+            x, y, cw, ch = cv2.boundingRect(contour)
+            if max(cw, ch) < min_span:
+                continue
+
+            polyline = self._contour_to_polyline(contour, closed=False)
+            if len(polyline) < 2:
+                continue
+
+            if stitch_centers:
+                distances = []
+                for sx, sy in stitch_centers:
+                    closest = self._closest_point_on_polyline(float(sx), float(sy), polyline)
+                    if closest is None:
+                        continue
+                    _, _, dist2 = closest
+                    distances.append(float(np.sqrt(dist2)))
+                if not distances:
+                    continue
+
+                median_distance = float(np.median(distances))
+            else:
+                median_distance = 0.0
+
+            span_bonus = 0.015 * max(cw, ch)
+            length_bonus = 0.002 * length
+            score = median_distance - span_bonus - length_bonus
+            candidates.append((score, contour, polyline))
+
+        if not candidates:
+            return None, None
+
+        candidates.sort(key=lambda item: item[0])
+        return candidates[0][1], candidates[0][2]
+
     def get_perpendicular_distance_to_edges(self, centroid, mask):
         """Calculate perpendicular distances from a centroid to top and bottom mask edges"""
         binary_mask = mask.astype(np.uint8)
@@ -239,51 +356,18 @@ class ImageProcessor:
 
         all_distances = []
 
-        max_steps = int(getattr(config, "SEG_OUTER_EDGE_MAX_STEPS", max(mask_w, mask_h)))
-        max_steps = max(1, min(max_steps, int(max(mask_w, mask_h))))
         for stitch_center in stitch_centers:
             cx, cy = float(stitch_center[0]), float(stitch_center[1])
-            closest = self._closest_point_on_polyline(cx, cy, contour_poly)
-            if closest is None:
-                continue
-            inner_x, inner_y, _ = closest
-
-            # Local Window Tangent Fitting
-            local_pts = contour_points[np.abs(contour_points[:, 1] - inner_y) < 100]
-            if len(local_pts) >= 2:
-                [vx, vy, x0, y0] = cv2.fitLine(local_pts, cv2.DIST_L2, 0, 0.01, 0.01)
-                vx = float(vx[0])
-                vy = float(vy[0])
-                x0 = float(x0[0])
-                y0 = float(y0[0])
-                
-                # Project stitch center onto the local line
-                t = (cx - x0) * vx + (cy - y0) * vy
-                inner_x = x0 + t * vx
-                inner_y = y0 + t * vy
-
-            vec_x = inner_x - cx
-            vec_y = inner_y - cy
-            vec_norm = float(np.hypot(vec_x, vec_y))
-            if vec_norm == 0.0:
+            outer_edge = self._outer_edge_point_for_stitch(
+                cx,
+                cy,
+                contour_points,
+                binary_mask=combined_edge_mask,
+            )
+            if outer_edge is None:
                 continue
 
-            dir_x = vec_x / vec_norm
-            dir_y = vec_y / vec_norm
-            outer_x, outer_y = float(inner_x), float(inner_y)
-
-            for _ in range(max_steps):
-                nx = outer_x + dir_x
-                ny = outer_y + dir_y
-                ix = int(round(nx))
-                iy = int(round(ny))
-                if ix < 0 or ix >= mask_w or iy < 0 or iy >= mask_h:
-                    break
-                if combined_edge_mask[iy, ix]:
-                    outer_x, outer_y = nx, ny
-                else:
-                    break
-
+            outer_x, outer_y = outer_edge
             edge_point = (int(round(outer_x)), int(round(outer_y)))
             distance_pixels = float(np.hypot(outer_x - cx, outer_y - cy))
             distance_mm = distance_pixels * self.mm_per_pixel
@@ -324,61 +408,27 @@ class ImageProcessor:
                                 roi_bottom_frac=EDGE_ROI_BOTTOM_FRACTION,
                                 roi_left_frac=EDGE_ROI_LEFT_FRACTION,
                                 roi_right_frac=EDGE_ROI_RIGHT_FRACTION,
-                                smooth_ksize=EDGE_ENVELOPE_SMOOTH_KERNEL):
-        """Detect fabric edge using Canny edge detection and return the rightmost envelope.
+                                smooth_ksize=EDGE_ENVELOPE_SMOOTH_KERNEL,
+                                stitch_centers=None):
+        """Detect one fabric-edge contour using Canny without left/right bias.
 
-        Strategy:
-            1. Convert to grayscale and blur to reduce noise.
-            2. Apply Canny edge detection.
-            3. Optionally dilate to connect nearby edge fragments.
-            4. Restrict search to a rectangular ROI defined by fractional bounds
-            (width: roi_left_frac to roi_right_frac, height: roi_top_frac to roi_bottom_frac).
-            5. For each row inside the ROI, find the rightmost edge pixel — this traces the fabric edge.
-            6. Smooth the resulting envelope with a median filter.
-
-        Args:
-            frame: Input BGR image from camera.
-            canny_low: Lower threshold for Canny.
-            canny_high: Upper threshold for Canny.
-            blur_ksize: Gaussian blur kernel size (odd number).
-            dilate_ksize: Dilation kernel size to connect nearby edges (0 = skip).
-            roi_top_frac: Top boundary of ROI as fraction of image height (0.0–1.0).
-            roi_bottom_frac: Bottom boundary of ROI as fraction of image height (0.0–1.0).
-            roi_left_frac: Left boundary of ROI as fraction of image width (0.0–1.0).
-            roi_right_frac: Right boundary of ROI as fraction of image width (0.0–1.0).
-            smooth_ksize: Kernel size for median smoothing of the envelope (odd, 0 = skip).
-
-        Returns:
-                envelope: 1D int array of length h. envelope[y] = x-coordinate of the
-                    detected fabric edge in row y, or -1 if no edge found.
-            edge_map: Binary edge image (useful for visualization / debugging).
-            roi_rect: Tuple (roi_x1, roi_y1, roi_x2, roi_y2) pixel coordinates of the ROI rectangle.
+        The returned edge map contains only the selected contour, not every Canny
+        edge. This keeps annotation clean and prevents texture/stitch noise from
+        becoming the seam allowance target.
         """
         h, w = frame.shape[:2]
 
-        # 1. Grayscale + blur
         gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
         if blur_ksize > 0:
             ksize = blur_ksize if blur_ksize % 2 == 1 else blur_ksize + 1
             gray = cv2.GaussianBlur(gray, (ksize, ksize), 0)
 
-        # 2. Canny edge detection
         edges = cv2.Canny(gray, canny_low, canny_high)
 
-        # 3. Optional dilation to bridge small gaps
         if dilate_ksize > 0:
             kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (dilate_ksize, dilate_ksize))
             edges = cv2.dilate(edges, kernel, iterations=1)
 
-        # 3.5. Filter contours to keep only lengthy edges, discard short ones
-        contours, _ = cv2.findContours(edges, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-        min_length = 100  # Minimum contour length to keep
-        long_contours = [c for c in contours if cv2.arcLength(c, False) > min_length]
-        edges = np.zeros_like(edges)
-        if long_contours:
-            cv2.drawContours(edges, long_contours, -1, 255, 3)  # Thicker lines
-
-        # 4. Mask out everything OUTSIDE the rectangular ROI
         roi_y1 = max(0, min(int(h * roi_top_frac), h - 1))
         roi_y2 = max(roi_y1 + 1, min(int(h * roi_bottom_frac), h))
         roi_x1 = max(0, min(int(w * roi_left_frac), w - 1))
@@ -388,54 +438,24 @@ class ImageProcessor:
         mask[roi_y1:roi_y2, roi_x1:roi_x2] = 255
         edges = cv2.bitwise_and(edges, mask)
 
+        contours, _ = cv2.findContours(edges, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        selected_contour, edge_line_points = self._select_fabric_edge_contour(
+            contours,
+            stitch_centers or [],
+            w,
+            h,
+        )
+
+        selected_edge_map = np.zeros_like(edges)
+        if selected_contour is not None:
+            cv2.drawContours(selected_edge_map, [selected_contour], -1, 255, 2)
+
         roi_rect = (roi_x1, roi_y1, roi_x2, roi_y2)
-
-        # 5. For each row, find the RIGHTMOST edge pixel (rightmost envelope)
-        envelope = np.full((h,), -1, dtype=int)  # Now indexed by ROW, not column
-        rev = edges[:, ::-1]              # Horizontal flip
-        has_any = rev.any(axis=1)        # Check each ROW
-        idx_in_rev = np.argmax(rev > 0, axis=1)
-
-        for y in range(h):
-            if has_any[y]:
-                envelope[y] = w - 1 - idx_in_rev[y]  # Rightmost x in this row
-
-        # 6. Smooth the envelope with a median filter to remove noise
-        if smooth_ksize > 0:
-            ksize = smooth_ksize if smooth_ksize % 2 == 1 else smooth_ksize + 1
-            valid_mask = envelope >= 0
-            if valid_mask.sum() > ksize:
-                # Only smooth valid entries; keep -1 for invalid
-                temp = envelope.astype(np.float32).copy()
-                temp[~valid_mask] = np.nan
-                # Fill NaN gaps with nearest valid for filtering, then restore
-                filled = temp.copy()
-                # Forward fill
-                for i in range(1, h):
-                    if np.isnan(filled[i]) and not np.isnan(filled[i-1]):
-                        filled[i] = filled[i-1]
-                # Backward fill
-                for i in range(h-2, -1, -1):
-                    if np.isnan(filled[i]) and not np.isnan(filled[i+1]):
-                        filled[i] = filled[i+1]
-
-                if not np.isnan(filled).all():
-                    filled = np.nan_to_num(filled, nan=0.0).astype(int)
-                    # cv2.medianBlur only supports uint8, but envelope values can exceed 255.
-                    # Use a manual sliding-window median instead.
-                    half_k = ksize // 2
-                    smoothed = filled.copy()
-                    for i in range(half_k, h - half_k):
-                        smoothed[i] = int(np.median(filled[i - half_k : i + half_k + 1]))
-                    # Restore invalids
-                    envelope[valid_mask] = smoothed[valid_mask]
-
-        return envelope, edges, roi_rect
+        return selected_edge_map, roi_rect, edge_line_points
 
     def calculate_stitch_edge_distances_canny(self, result):
         """
-        Calculate the distance between stitches and edge using
-        Canny-based rightmost envelope detection.
+        Calculate stitch-to-edge distances using the selected Canny contour.
         """
         stitch_centers = []
         min_required = getattr(config, "MIN_STITCH_DETECTIONS", 3)
@@ -478,51 +498,33 @@ class ImageProcessor:
                 'avg_distance_mm': None
             }
 
-        # 2. Run Canny Edge Detection to get the fabric boundary (envelope)
-        # Use your custom function with a restricted ROI to ignore corner edges
-        envelope, edge_map, _ = self.detect_fabric_edge_canny(
+        # 2. Run Canny fallback and keep one selected contour, not a left/right envelope.
+        edge_map, _, edge_line_points = self.detect_fabric_edge_canny(
             frame,
             roi_top_frac=roi_y1,
             roi_bottom_frac=roi_y2,
             roi_left_frac=roi_x1,
             roi_right_frac=roi_x2,
+            stitch_centers=stitch_centers,
         )
 
-        edge_line_points = [(int(x), int(y)) for y, x in enumerate(envelope) if x != -1]
-        if len(edge_line_points) < 2:
+        if edge_line_points is not None and len(edge_line_points) < 2:
             edge_line_points = None
 
         all_distances = []
-        edge_pts_arr = np.array(edge_line_points) if edge_line_points else None
 
-        # 3. Calculate distances using the envelope
+        # 3. Calculate perpendicular distances to the selected contour.
         for cx, cy in stitch_centers:
             ix, iy = int(cx), int(cy)
-            
+
             # Ensure coordinates are within image bounds
             if 0 <= ix < w and 0 <= iy < h and edge_line_points is not None:
-                closest = self._closest_point_on_polyline(cx, cy, edge_line_points)
-                if closest is None:
+                outer_edge = self._outer_edge_point_for_stitch(cx, cy, edge_line_points)
+                if outer_edge is None:
                     continue
-                edge_x, edge_y, dist2 = closest
 
-                # Local Window Tangent Fitting for Canny
-                local_pts = edge_pts_arr[np.abs(edge_pts_arr[:, 1] - edge_y) < 100]
-                if len(local_pts) >= 2:
-                    [vx, vy, x0, y0] = cv2.fitLine(local_pts.astype(np.float32), cv2.DIST_L2, 0, 0.01, 0.01)
-                    vx = float(vx[0])
-                    vy = float(vy[0])
-                    x0 = float(x0[0])
-                    y0 = float(y0[0])
-                
-                    # Project stitch center onto the local line
-                    t = (cx - x0) * vx + (cy - y0) * vy
-                    edge_x = x0 + t * vx
-                    edge_y = y0 + t * vy
-                    distance_pixels = float(np.hypot(edge_x - cx, edge_y - cy))
-                else:
-                    distance_pixels = float(np.sqrt(dist2))
-
+                edge_x, edge_y = outer_edge
+                distance_pixels = float(np.hypot(edge_x - cx, edge_y - cy))
                 distance_mm = distance_pixels * self.mm_per_pixel
                 edge_point = (int(round(edge_x)), int(round(edge_y)))
 
@@ -547,44 +549,20 @@ class ImageProcessor:
         else:
             avg_distance_mm = None
 
-        # Optional: Logic to handle cases where no edges were found in stitch columns
-        if avg_distance_mm is None:
-            # If we detected an edge envelope anywhere, use its mean x as a fallback edge line.
-            edge_xs = [x for x in envelope if x != -1]
-            if edge_xs and stitch_centers:
-                fallback_edge_x = float(np.mean(edge_xs))
-                for cx, cy in stitch_centers:
-                    distance_pixels = abs(cx - fallback_edge_x)
-                    distance_mm = distance_pixels * self.mm_per_pixel
-                    all_distances.append({
-                        'stitch_center': (cx, cy),
-                        'edge_x': fallback_edge_x,
-                        'edge_point': (int(round(fallback_edge_x)), int(round(cy))),
-                        'distance_pixels': float(distance_pixels),
-                        'distance_mm': float(distance_mm)
-                    })
-                    total_distance_mm += distance_mm
-                valid_distance_count = len(stitch_centers)
-                avg_distance_mm = total_distance_mm / valid_distance_count
-                # print("[WARNING] No edge found in stitch columns: using mean envelope y fallback for distance calculation.")
-            else:
-                pass
-                # print("[WARNING] No fabric edge detected in columns containing stitches.")
+        # If no clean selected contour produced distances, let the caller fall back to buffers.
 
         # Debug logging: why avg_distance_mm might be None (suppressed - only print if needed for troubleshooting)
         # stitch_count = len(stitch_centers)
-        # edge_columns = sum(1 for y in envelope if y != -1)
+        # edge_columns = len(edge_line_points or [])
         # calculated_distances = len(all_distances)
         # print(f"[DEBUG] stitch_centers={stitch_count}, edge_columns={edge_columns}, distances_computed={calculated_distances}, avg_distance_mm={avg_distance_mm}")
 
         # Provide a minimal edge_centers list so caller code can report an edge count.
-        # We use a representative point (mean edge x, center y) when available.
+        # We use a representative contour point when available.
         edge_centers = []
-        if envelope is not None:
-            edge_xs = [x for x in envelope if x != -1]
-            if edge_xs:
-                mean_x = float(np.mean(edge_xs))
-                edge_centers.append((mean_x, h / 2.0))
+        if edge_line_points:
+            pts = np.array(edge_line_points, dtype=np.float32)
+            edge_centers.append((float(np.mean(pts[:, 0])), float(np.mean(pts[:, 1]))))
 
         return {
             'stitch_centers': stitch_centers,
