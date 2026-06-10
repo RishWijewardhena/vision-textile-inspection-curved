@@ -90,12 +90,14 @@ class ImageProcessor:
         return best
 
     def _outer_edge_point_for_stitch(self, cx, cy, edge_points, binary_mask=None, y_window=100.0):
-        """Return the fabric-side edge point for a stitch.
+        """Return the closest projected point on the local outer fabric boundary.
 
         If stitches are left of the local edge band, use the right-most edge.
         If stitches are right of it, use the left-most edge. This keeps seam
         allowance lines aimed at the outer contour near the background instead
-        of the inner contour nearest to the stitch.
+        of the inner contour nearest to the stitch. The final point is then
+        chosen by closest projection onto that selected boundary, so the seam
+        allowance line is perpendicular/minimum for that outer boundary.
         """
         if edge_points is None:
             return None
@@ -111,43 +113,48 @@ class ImageProcessor:
         local_center_x = float(np.median(local_pts[:, 0]))
         use_right_edge = float(cx) <= local_center_x
 
-        min_x = float(np.min(local_pts[:, 0]))
-        max_x = float(np.max(local_pts[:, 0]))
-        x_span = max_x - min_x
-        side_band = max(3.0, min(25.0, x_span * 0.20))
-
-        if use_right_edge:
-            side_pts = local_pts[local_pts[:, 0] >= max_x - side_band]
-        else:
-            side_pts = local_pts[local_pts[:, 0] <= min_x + side_band]
-
-        if len(side_pts) < 2:
-            idx = int(np.argmax(local_pts[:, 0]) if use_right_edge else np.argmin(local_pts[:, 0]))
-            edge_x, edge_y = float(local_pts[idx, 0]), float(local_pts[idx, 1])
-        else:
-            [vx, vy, x0, y0] = cv2.fitLine(side_pts.astype(np.float32), cv2.DIST_L2, 0, 0.01, 0.01)
-            vx = float(vx[0])
-            vy = float(vy[0])
-            x0 = float(x0[0])
-            y0 = float(y0[0])
-
-            t = (float(cx) - x0) * vx + (float(cy) - y0) * vy
-            side_t = (side_pts[:, 0] - x0) * vx + (side_pts[:, 1] - y0) * vy
-            if len(side_t) > 0:
-                t = float(np.clip(t, np.min(side_t), np.max(side_t)))
-
-            edge_x = x0 + t * vx
-            edge_y = y0 + t * vy
+        boundary_points = []
 
         if binary_mask is not None:
             mask_h, _ = binary_mask.shape[:2]
-            iy = int(round(edge_y))
-            if 0 <= iy < mask_h:
+            y1 = max(0, int(round(float(cy) - float(y_window))))
+            y2 = min(mask_h - 1, int(round(float(cy) + float(y_window))))
+            for iy in range(y1, y2 + 1):
                 xs = np.flatnonzero(binary_mask[iy])
                 if xs.size > 0:
                     edge_x = float(xs[-1] if use_right_edge else xs[0])
-                    edge_y = float(iy)
+                    boundary_points.append((edge_x, float(iy)))
 
+        if len(boundary_points) < 2:
+            min_x = float(np.min(local_pts[:, 0]))
+            max_x = float(np.max(local_pts[:, 0]))
+            x_span = max_x - min_x
+            side_band = max(3.0, min(25.0, x_span * 0.20))
+
+            if use_right_edge:
+                side_pts = local_pts[local_pts[:, 0] >= max_x - side_band]
+            else:
+                side_pts = local_pts[local_pts[:, 0] <= min_x + side_band]
+
+            if len(side_pts) < 2:
+                idx = int(np.argmax(local_pts[:, 0]) if use_right_edge else np.argmin(local_pts[:, 0]))
+                edge_x, edge_y = float(local_pts[idx, 0]), float(local_pts[idx, 1])
+                return edge_x, edge_y
+
+            # The selected side is normally a vertical-ish fabric boundary.
+            # Sorting by its dominant axis gives the projection helper a clean
+            # local polyline even when contour point order is noisy.
+            x_range = float(np.max(side_pts[:, 0]) - np.min(side_pts[:, 0]))
+            y_range = float(np.max(side_pts[:, 1]) - np.min(side_pts[:, 1]))
+            sort_axis = 1 if y_range >= x_range else 0
+            order = np.argsort(side_pts[:, sort_axis])
+            boundary_points = [(float(x), float(y)) for x, y in side_pts[order]]
+
+        closest = self._closest_point_on_polyline(float(cx), float(cy), boundary_points)
+        if closest is None:
+            return None
+
+        edge_x, edge_y, _ = closest
         return float(edge_x), float(edge_y)
 
     def _contour_to_polyline(self, contour, closed=False):
