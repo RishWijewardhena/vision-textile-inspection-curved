@@ -27,7 +27,7 @@ processing_lock = threading.Lock()
 last_capture_time = 0
 last_processed_distance = 0.0
 
-# Keep the last 5 valid measurements for real-data fallback (no random values).
+# Keep the last 5 positive measurements for real-data fallback (no random values).
 stitch_length_buffer = deque(maxlen=5)
 seam_allowance_buffer = deque(maxlen=5)
 
@@ -141,11 +141,6 @@ def process_fabric_immediate(
 
         processing_time = time.time() - start_time
 
-        # ✅ Update serial distance model with latest measured stitch length (ONLY if valid)
-        avg_len = summary.get("avg_stitch_length_mm")
-        if is_stitch_length_in_ideal_range(avg_len):
-            serial_communicator.last_avg_stitch_length_mm = float(avg_len)
-
         out_path = os.path.join(session_output_dir, f"fabric_{capture_ts}.jpg")
         cv2.imwrite(out_path, annotated)
 
@@ -167,12 +162,6 @@ def process_fabric_immediate(
             raw_stitch_history.append(stitch_length)
         if seam_allowance is not None:
             raw_seam_history.append(seam_allowance)
-
-        # Keep fallback buffers valid-only; raw histories above keep out-of-range samples.
-        if is_stitch_length_in_ideal_range(stitch_length):
-            stitch_length_buffer.append(float(stitch_length))
-        if is_seam_allowance_in_ideal_range(seam_allowance):
-            seam_allowance_buffer.append(float(seam_allowance))
 
         # If this frame missed a measurement, fall back to mean of recent samples.
         stitch_used_buffer = False
@@ -258,6 +247,17 @@ def process_fabric_immediate(
                 f"{config.IDEAL_SEAM_ALLOWANCE_MM_MAX:.3f}mm)"
             )
             seam_allowance = None
+
+        # Keep buffers and the serial distance model aligned with the final accepted value.
+        if stitch_length is not None and float(stitch_length) > 0:
+            stitch_length = float(stitch_length)
+            stitch_length_buffer.append(stitch_length)
+            serial_communicator.last_avg_stitch_length_mm = stitch_length
+            print(f"Updated distance stitch length: {stitch_length:.3f}mm")
+
+        if seam_allowance is not None and float(seam_allowance) > 0:
+            seam_allowance = float(seam_allowance)
+            seam_allowance_buffer.append(seam_allowance)
 
         if confirmed_override:
             print(log_ts() + " Confirmed override applied - proceeding with insert")
@@ -616,10 +616,10 @@ def main():
         # Seed fallback buffers with recent real measurements from DB.
         recent_real = db_manager.get_recent_valid_measurements(limit=5)
         for stitch_val, seam_val in recent_real:
-            if is_stitch_length_in_ideal_range(stitch_val):
-                stitch_length_buffer.append(stitch_val)
-            if is_seam_allowance_in_ideal_range(seam_val):
-                seam_allowance_buffer.append(seam_val)
+            if stitch_val is not None and float(stitch_val) > 0:
+                stitch_length_buffer.append(float(stitch_val))
+            if seam_val is not None and float(seam_val) > 0:
+                seam_allowance_buffer.append(float(seam_val))
         if recent_real:
             stitch_mean = sum(stitch_length_buffer) / len(stitch_length_buffer) if stitch_length_buffer else 0.0
             seam_mean = sum(seam_allowance_buffer) / len(seam_allowance_buffer) if seam_allowance_buffer else 0.0
