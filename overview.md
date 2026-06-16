@@ -10,7 +10,7 @@ THREAD is a real-time fabric inspection pipeline that:
 - Publishes health/reset signals via MQTT
 - Cleans old images automatically
 
-This document reflects the current runtime behavior in `main.py` as of 2026-05-25.
+This document reflects the current runtime behavior in `main.py` as of 2026-06-16.
 
 ## 2. Current Runtime Architecture
 
@@ -68,6 +68,11 @@ Responsibilities:
 - Insert rows with safety checks
 - Fetch previous rows for startup seeding
 
+Startup seeding behavior:
+- `get_recent_valid_measurements(...)` fetches recent non-null positive stitch/seam values.
+- It no longer filters startup buffer rows by ideal stitch/seam ranges.
+- `main.py` loads positive DB values into the runtime buffers and initializes `last_avg_stitch_length_mm` from the stitch buffer mean when available.
+
 Observed behavior:
 - If DB host cannot resolve/connect, inserts are skipped and errors are logged.
 
@@ -75,8 +80,16 @@ Observed behavior:
 Responsibilities:
 - Open ESP32 serial port (configured + discovery fallback)
 - Read integer stitch counts from newline-delimited serial stream
-- Convert stitch deltas to distance using last valid AI stitch length
+- Convert stitch deltas to distance using `last_avg_stitch_length_mm`
 - Send reset command `R`
+
+Distance formula:
+
+```text
+current_total_distance += stitch_delta * last_avg_stitch_length_mm
+```
+
+If `last_avg_stitch_length_mm` is `0.0` or unavailable, the distance update is skipped and total distance remains unchanged.
 
 ### `mqtt_heartbeat.py`
 Responsibilities:
@@ -117,20 +130,24 @@ Main thread:
 - Worker logs warning when queued job wait exceeds one interval:
   - `[WARN] Capture job lag: X.XXs`
 
-## 6. Measurement and DB Rules
+## 6. Measurement, Buffer, and DB Rules
 
 Per frame, `process_fabric_immediate(...)`:
 1. Capture frame
-2. Run inference and compute summary
-3. Update serial conversion model when stitch length is valid
-4. Save annotated image
-5. Apply range validation
-6. Optional fallback to buffer means when movement occurred and direct measurement is missing
-7. Insert to DB (unless disabled in fallback mode)
+2. Run inference and compute raw stitch length and seam allowance
+3. Add raw camera values to `raw_stitch_history` and `raw_seam_history`
+4. Use buffer means when a measurement is missing, or when an out-of-range value is not yet confirmed
+5. Apply sustained-confirmation override for repeated out-of-range values
+6. Add the final accepted positive values to the runtime buffers
+7. Update `serial_communicator.last_avg_stitch_length_mm` from the final accepted stitch length
+8. Insert the final accepted values to DB when serial movement occurred
 
 Important:
-- Out-of-range values are filtered unless sustained-confirmation override criteria are met.
-- Missing real measurements can cause DB insert skip depending on DB manager rules.
+- The raw history stores current camera values, including out-of-range values.
+- The runtime buffers store final accepted positive values. These can come from DB startup seeding, buffer fallback, normal camera values, or confirmed override values.
+- `confirmed_override = True` means the repeated out-of-range camera value is trusted. It is added to the buffer, used for DB insert, and used as the next serial distance multiplier.
+- `last_avg_stitch_length_mm` is the multiplier used to convert ESP32 stitch-count deltas into total distance.
+- Missing final values can still cause DB insert skip depending on DB manager rules.
 
 ## 7. Current Config Surface
 
@@ -175,6 +192,12 @@ Rationale:
 ### `Unable to obtain measurements from frame`
 - Model/vision path returned no valid measurement for that frame.
 - Can happen due to lighting, framing, motion blur, occlusion, or detection miss.
+- If runtime buffers are populated, missing values can be replaced with buffer means before DB insert.
+
+### `Avg stitch length not available yet; skipping distance update`
+- ESP32 provided a stitch delta, but `last_avg_stitch_length_mm` is still missing or `0.0`.
+- This normally happens before DB startup seeding succeeds or before the first final accepted stitch length is produced.
+- Once a positive final stitch length is accepted, `main.py` updates `last_avg_stitch_length_mm` and later serial deltas can update total distance.
 
 ## 10. Startup and Run
 
