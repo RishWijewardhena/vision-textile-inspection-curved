@@ -205,8 +205,6 @@ class DatabaseManager:
           AND `seam_allowance` IS NOT NULL
           AND `stitch_length` > 0
           AND `seam_allowance` > 0
-                    AND `stitch_length` BETWEEN {config.IDEAL_STITCH_LENGTH_MM_MIN} AND {config.IDEAL_STITCH_LENGTH_MM_MAX}
-                    AND `seam_allowance` BETWEEN {config.IDEAL_SEAM_ALLOWANCE_MM_MIN} AND {config.IDEAL_SEAM_ALLOWANCE_MM_MAX}
         ORDER BY `timestamp` DESC
         LIMIT %s
         """
