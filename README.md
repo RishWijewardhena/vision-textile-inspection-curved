@@ -75,15 +75,35 @@ The system will start, initialize the camera and serial communication, and begin
 
 - **Camera capture**: The system tries `camera.index` first, then scans `/dev/v4l/by-id`, then `/dev/video*` and uses the first device that opens successfully. Capture uses the resolution configured in [config.yaml](config.yaml).
 - **Reconnect attempts**: When capture fails, the camera is reinitialized. After `camera.max_reconnect_attempts` failures, the app calls `reload_camera()` and retries.
-- **Serial-triggered processing**: When the ESP32 serial port is available, processing runs on a timed interval and distance updates are derived from stitch counts.
-- **Fallback capture (no serial)**: If the serial port is not available, the app still captures and processes frames on the same `processing.capture_interval`.
+- **Serial-triggered processing**: When the ESP32 serial port is available, processing runs on a timed interval and distance updates are derived from stitch-count deltas.
+- **Fallback capture (no serial)**: If the serial port is not available, the app still captures and processes frames on the same `processing.capture_interval`, but DB inserts are skipped in fallback mode.
+- **Bounded processing queue**: Capture schedulers enqueue jobs into a bounded `capture_queue`. A single worker processes jobs sequentially. If the queue is full, the oldest pending job is dropped so the system favors fresh frames.
+- **Total distance tracking**: `serial_communicator.current_total_distance` is updated as `stitch_delta * last_avg_stitch_length_mm`. The latest accepted stitch length becomes the next distance multiplier.
+- **Startup distance reset**: On startup, if the last DB measurement date is before the current local date, the app inserts a reset row and initializes runtime total distance to `0.00mm`. It does not re-read the DB total after a successful startup reset.
+- **Reset boundary protection**: Manual MQTT resets and startup resets clear runtime distance, measurement buffers, raw histories, and queued capture work. Capture jobs are tagged with a `reset_generation`; jobs queued before a reset are skipped if they finish after the reset.
 - **Image cleanup**: Images under `output.directory` are deleted after `output.image_retention_seconds`.
 
 ## MQTT
 
 - **Heartbeat**: Publishes `on` to `machine/<DEVICE_ID>/status/heartbeat` every `MQTT_HEARTBEAT_INTERVAL` seconds.
-- **Reset command**: Listens on `machine/<DEVICE_ID>/commands/reset` for `reset` and replies with `reset_success`.
+- **Reset command**: Listens on `machine/<DEVICE_ID>/commands/reset` for `reset` and replies with `reset_success` after the DB reset row and ESP32 reset command succeed.
 - **Camera issue**: Publishes `issue` to `machine/<DEVICE_ID>/status/camera_issue` when frame capture fails.
+
+## Reset and Distance Safety
+
+The reset path is designed to prevent old distance values from being written after a reset row.
+
+When a reset is requested:
+
+1. Serial and fallback scheduling pause via `reset_in_progress`.
+2. Active processing is allowed to finish under `processing_lock`.
+3. Runtime state is reset with `reset_runtime_state()`.
+4. Pending capture jobs are removed with `clear_capture_queue()`.
+5. A DB row `(stitch_length=0, seam_allowance=0, total_distance=0)` is inserted.
+6. The ESP32 reset command `R` is sent.
+7. Scheduling resumes after `RESET_POST_DELAY_SEC`.
+
+Each queued capture job stores the current `reset_generation`. If a job was queued before a reset and finishes after the reset, it is skipped and cannot insert stale `total_distance` into MySQL.
 
 ## Camera Calibration
 

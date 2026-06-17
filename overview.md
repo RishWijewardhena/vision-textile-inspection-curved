@@ -10,7 +10,7 @@ THREAD is a real-time fabric inspection pipeline that:
 - Publishes health/reset signals via MQTT
 - Cleans old images automatically
 
-This document reflects the current runtime behavior in `main.py` as of 2026-06-16.
+This document reflects the current runtime behavior in `main.py` as of 2026-06-17.
 
 ## 2. Current Runtime Architecture
 
@@ -44,7 +44,14 @@ Key functions:
 - `processing_worker_thread(...)`: single consumer
 - `serial_monitor_thread(...)`: serial reads + interval scheduling
 - `fallback_capture_thread(...)`: timer scheduling when ESP32 missing
-- `perform_reset()`: DB reset row + serial reset command + runtime state reset
+- `perform_reset()`: pause schedulers, reset runtime state, clear queued jobs, insert DB reset row, and send serial reset command
+- `clear_capture_queue(...)`: removes pending pre-reset capture work
+- `reset_runtime_state(...)`: resets runtime distance, buffers, raw histories, and increments `reset_generation`
+
+Reset-related state:
+- `state_lock`: protects shared distance/reset state across threads
+- `reset_in_progress`: pauses serial and fallback schedulers during reset
+- `reset_generation`: tags capture jobs so stale pre-reset jobs cannot write after reset
 
 ### `camera_manager.py`
 Responsibilities:
@@ -72,6 +79,7 @@ Startup seeding behavior:
 - `get_recent_valid_measurements(...)` fetches recent non-null positive stitch/seam values.
 - It no longer filters startup buffer rows by ideal stitch/seam ranges.
 - `main.py` loads positive DB values into the runtime buffers and initializes `last_avg_stitch_length_mm` from the stitch buffer mean when available.
+- If startup detects a new day, it inserts a reset row and initializes runtime total distance directly to `0.0` after the reset succeeds. It does not immediately re-read `total_distance` from DB on that reset path.
 
 Observed behavior:
 - If DB host cannot resolve/connect, inserts are skipped and errors are logged.
@@ -125,6 +133,8 @@ Main thread:
   - oldest pending job is dropped
   - newest job is inserted
 - This is **latest-data-first** behavior (real-time freshness over processing every historical tick)
+- Every queued job stores the current `reset_generation`.
+- If reset happens before a queued job finishes, the job's generation no longer matches the current generation and its result is skipped.
 
 ### Worker lag signal
 - Worker logs warning when queued job wait exceeds one interval:
@@ -140,7 +150,7 @@ Per frame, `process_fabric_immediate(...)`:
 5. Apply sustained-confirmation override for repeated out-of-range values
 6. Add the final accepted positive values to the runtime buffers
 7. Update `serial_communicator.last_avg_stitch_length_mm` from the final accepted stitch length
-8. Insert the final accepted values to DB when serial movement occurred
+8. Insert the final accepted values to DB when serial movement occurred and the job is not stale after reset
 
 Important:
 - The raw history stores current camera values, including out-of-range values.
@@ -148,8 +158,52 @@ Important:
 - `confirmed_override = True` means the repeated out-of-range camera value is trusted. It is added to the buffer, used for DB insert, and used as the next serial distance multiplier.
 - `last_avg_stitch_length_mm` is the multiplier used to convert ESP32 stitch-count deltas into total distance.
 - Missing final values can still cause DB insert skip depending on DB manager rules.
+- Jobs queued before a reset cannot insert after reset because `process_fabric_immediate(...)` compares the job's `reset_generation` with the current generation.
 
-## 7. Current Config Surface
+## 7. Reset and Total Distance Safety
+
+### New-day startup reset
+On startup, `main.py` checks the latest DB measurement date.
+
+If the latest DB date is before the current local date:
+1. `database_manager.reset_total_distance_on_startup()` inserts a reset row.
+2. `reset_runtime_state(serial_communicator)` resets in-memory distance and buffers.
+3. Runtime `serial_communicator.current_total_distance` is initialized to `0.0`.
+4. The startup path skips the normal DB total-distance reload.
+
+This prevents a stale DB row from restoring an old distance immediately after a successful startup reset.
+
+If no startup reset is needed, `main.py` loads the last DB `total_distance` and continues from that value.
+
+### Manual MQTT reset
+`perform_reset()` treats reset as a runtime state boundary:
+1. Set `reset_in_progress` so serial/fallback schedulers pause.
+2. Acquire `processing_lock` so no active frame can insert while the reset row is being written.
+3. Call `reset_runtime_state(...)`.
+4. Call `clear_capture_queue(...)` to drop queued pre-reset jobs.
+5. Insert DB reset row `(0, 0, 0)`.
+6. Send serial command `R` to the ESP32.
+7. Wait `RESET_POST_DELAY_SEC`.
+8. Clear `reset_in_progress` so schedulers resume.
+
+### Stale job protection
+Each capture job stores:
+
+```text
+reset_generation = current reset_generation at enqueue time
+```
+
+When reset occurs, `reset_runtime_state(...)` increments the global `reset_generation`.
+
+If an old job finishes after reset:
+
+```text
+job_reset_generation != current_reset_generation
+```
+
+The worker skips the result before DB insert, preventing an old `total_distance` from being written after a reset row.
+
+## 8. Current Config Surface
 
 ### `config.yaml`
 - `processing.capture_interval`
@@ -165,7 +219,7 @@ Important:
 - `CAMERA_FLUSH_FRAMES`
 - DB/MQTT credentials from `.env`
 
-## 8. 15 FPS Recommendations (Applied)
+## 9. 15 FPS Recommendations (Applied)
 
 For a 15 FPS camera (~66.7ms/frame):
 - `camera.flush_frames: 1`
@@ -175,7 +229,7 @@ Rationale:
 - Large flush counts add capture latency
 - Queue size 1 prevents multi-second backlog accumulation
 
-## 9. Known Failure Modes and Meaning
+## 10. Known Failure Modes and Meaning
 
 ### `Waiting for first serial stitch count...`
 - Serial connected but no valid integer stitch line received yet.
@@ -184,6 +238,10 @@ Rationale:
 ### `Capture queue full - dropped oldest pending job`
 - Processing is slower than scheduler rate.
 - System is preserving freshness (by design), not processing every historical tick.
+
+### `Skipping stale capture result from before reset`
+- A capture job was queued before reset and completed after reset.
+- The result is intentionally discarded so it cannot insert stale distance into DB.
 
 ### `Can't connect to MySQL ... Temporary failure in name resolution`
 - DNS/network issue to DB host, not inference/camera logic.
@@ -199,7 +257,7 @@ Rationale:
 - This normally happens before DB startup seeding succeeds or before the first final accepted stitch length is produced.
 - Once a positive final stitch length is accepted, `main.py` updates `last_avg_stitch_length_mm` and later serial deltas can update total distance.
 
-## 10. Startup and Run
+## 11. Startup and Run
 
 1. Ensure `.env` has valid DB/MQTT credentials
 2. Ensure ESP32 appears on configured serial port (or discoverable)
@@ -210,9 +268,8 @@ Rationale:
 python main.py
 ```
 
-## 11. Shutdown
+## 12. Shutdown
 
 - SIGINT (`Ctrl+C`) sets `shutdown_event`
 - Threads join with timeout
 - DB, camera, and serial resources are closed
-
