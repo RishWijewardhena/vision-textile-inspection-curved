@@ -40,7 +40,7 @@ def image_cleanup_thread(shutdown_event, active_session_dir=None):
                         file_age = current_time - os.path.getmtime(file_path)
                         if file_age > config.IMAGE_RETENTION_SECONDS:
                             os.remove(file_path)
-                            print(f"🗑️ Deleted old image: {file_path}")
+                            #print(f"🗑️ Deleted old image: {file_path}")
                             deleted_any = True
                     except Exception as e:
                         print(f"[ERROR] Failed to process file {file_path}: {e}")
