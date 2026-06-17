@@ -24,6 +24,9 @@ from mqtt_heartbeat import MqttHeartbeat
 # Globals for state management
 shutdown_event = threading.Event()
 processing_lock = threading.Lock()
+state_lock = threading.Lock()
+reset_in_progress = threading.Event()
+reset_generation = 0
 last_capture_time = 0
 last_processed_distance = 0.0
 
@@ -67,6 +70,36 @@ def sigint_handler(sig, frame):
 
 signal.signal(signal.SIGINT, sigint_handler)
 
+
+def clear_capture_queue(capture_queue):
+    """Remove queued captures that may contain pre-reset stitch deltas."""
+    cleared = 0
+    while True:
+        try:
+            capture_queue.get_nowait()
+            capture_queue.task_done()
+            cleared += 1
+        except Empty:
+            break
+    if cleared:
+        print(f"Cleared {cleared} pending capture job(s) after reset")
+
+
+def reset_runtime_state(serial_communicator):
+    """Reset in-memory counters before any further DB insert can use them."""
+    global last_processed_distance, reset_generation
+
+    with state_lock:
+        reset_generation += 1
+        if serial_communicator:
+            serial_communicator.current_total_distance = 0.0
+            serial_communicator.last_avg_stitch_length_mm = 0.0
+        last_processed_distance = 0.0
+        stitch_length_buffer.clear()
+        seam_allowance_buffer.clear()
+        raw_stitch_history.clear()
+        raw_seam_history.clear()
+
 def reload_camera():
     """Reload webcam driver (uvcvideo)."""
     print(log_ts() + "  Reloading webcam driver...")
@@ -91,6 +124,7 @@ def process_fabric_immediate(
     delta_stitches,
     heartbeat,
     skip_db_insert=False,
+    job_reset_generation=None,
 ):
     """
     Process fabric immediately when triggered and INSERT ONCE per processed frame.
@@ -147,7 +181,16 @@ def process_fabric_immediate(
         # ✅ Extract measurements for logging and DB insertion
         stitch_length = summary.get("avg_stitch_length_mm")          # avg_length -> stitch_length
         seam_allowance = summary.get("avg_distance_mm")              # avg_dist -> seam_allowance
-        total_distance = serial_communicator.current_total_distance  # total_distance
+        with state_lock:
+            total_distance = serial_communicator.current_total_distance  # total_distance
+            current_reset_generation = reset_generation
+
+        if (
+            job_reset_generation is not None
+            and job_reset_generation != current_reset_generation
+        ):
+            print("Skipping stale capture result from before reset")
+            return
 
         # Only log detailed results if we have measurements
         if stitch_length is not None or seam_allowance is not None:
@@ -263,18 +306,24 @@ def process_fabric_immediate(
             print(log_ts() + " Confirmed override applied - proceeding with insert")
         ok = False
         if not skip_db_insert and delta_stitches > 0:
-            ok = db_manager.insert_measurement(
-                stitch_length=stitch_length,
-                seam_allowance=seam_allowance,
-                total_distance=total_distance,
-                ignore_limits=confirmed_override,
-            )
-
-            if ok:
-                print("✅ MySQL insert done (per-frame)")
+            if (
+                job_reset_generation is not None
+                and job_reset_generation != current_reset_generation
+            ):
+                print("Skipping DB insert from stale capture queued before reset")
             else:
-                # print("MySQL insert skipped (per-frame)")
-                pass
+                ok = db_manager.insert_measurement(
+                    stitch_length=stitch_length,
+                    seam_allowance=seam_allowance,
+                    total_distance=total_distance,
+                    ignore_limits=confirmed_override,
+                )
+
+                if ok:
+                    print("✅ MySQL insert done (per-frame)")
+                else:
+                    # print("MySQL insert skipped (per-frame)")
+                    pass
         elif skip_db_insert:
             print("Skipping DB insert (fallback mode - no ESP32 connection)")
 
@@ -290,12 +339,14 @@ def enqueue_capture_job(capture_queue, delta_stitches, heartbeat, skip_db_insert
     Enqueue capture work with bounded memory and deterministic behavior.
     If full, drop the oldest pending job and keep the newest one.
     """
-    job = {
-        "delta_stitches": delta_stitches,
-        "skip_db_insert": skip_db_insert,
-        "heartbeat": heartbeat,
-        "scheduled_mono": time.monotonic(),
-    }
+    with state_lock:
+        job = {
+            "delta_stitches": delta_stitches,
+            "skip_db_insert": skip_db_insert,
+            "heartbeat": heartbeat,
+            "scheduled_mono": time.monotonic(),
+            "reset_generation": reset_generation,
+        }
 
     try:
         capture_queue.put_nowait(job)
@@ -347,6 +398,7 @@ def processing_worker_thread(
                 job["delta_stitches"],
                 job["heartbeat"],
                 job["skip_db_insert"],
+                job.get("reset_generation"),
             )
         finally:
             capture_queue.task_done()
@@ -370,6 +422,10 @@ def serial_monitor_thread(serial_communicator, image_processor, camera_manager, 
 
     while not shutdown_event.is_set():
         try:
+            if reset_in_progress.is_set():
+                time.sleep(0.05)
+                continue
+
             last_stitch_count = serial_communicator.read_serial_data()
             if previous_stitch_count is None:
                 now = time.time()
@@ -387,15 +443,18 @@ def serial_monitor_thread(serial_communicator, image_processor, camera_manager, 
                 # Update total distance based on the latest stitch count and AI stitch length
                 if delta >= 0:
                     pending_delta_stitches += delta
-                    serial_communicator.update_distance_from_stitch_count(delta)
+                    with state_lock:
+                        serial_communicator.update_distance_from_stitch_count(delta)
                 else:
                     print(f"Stitch count decreased ({delta}); ignoring this sample")
 
             now_mono = time.monotonic()
 
             if now_mono >= next_capture_mono:
+                with state_lock:
+                    current_total_distance = serial_communicator.current_total_distance
                 print(
-                    f"(Distance: {serial_communicator.current_total_distance:.2f}mm, "
+                    f"(Distance: {current_total_distance:.2f}mm, "
                     f"Interval: {config.CAPTURE_INTERVAL:.2f}s)"
                 )
 
@@ -405,7 +464,7 @@ def serial_monitor_thread(serial_communicator, image_processor, camera_manager, 
                     heartbeat,
                     False,
                 )
-                last_processed_distance = serial_communicator.current_total_distance
+                last_processed_distance = current_total_distance
                 pending_delta_stitches = 0
                 while next_capture_mono <= now_mono:
                     next_capture_mono += config.CAPTURE_INTERVAL
@@ -436,6 +495,10 @@ def fallback_capture_thread(
 
     while not shutdown_event.is_set() and not stop_event.is_set():
         try:
+            if reset_in_progress.is_set():
+                time.sleep(0.05)
+                continue
+
             now_mono = time.monotonic()
             if now_mono >= next_capture_mono:
                 print(
@@ -498,39 +561,42 @@ def main():
         print("Processing reset command...")
 
         db_success = False
-        if db_manager:
-            db_success = db_manager.insert_measurement(
-                total_distance=0.0,
-                stitch_length=0.0,
-                seam_allowance=0.0,
-                ignore_limits=True,
-            )
-            if db_success:
-                print("DB reset row inserted (0,0,0)")
-            else:
-                print("DB reset row insert failed")
-        else:
-            print("DB unavailable for reset row insert")
-
         serial_success = False
-        if serial_communicator:
-            serial_success = serial_communicator.send_command("R")
-            if serial_success:
-                print("Serial reset command sent: R")
+        reset_in_progress.set()
+        processing_lock.acquire()
+        try:
+            reset_runtime_state(serial_communicator)
+            clear_capture_queue(capture_queue)
+            print("Runtime counters and buffers reset")
+
+            if db_manager:
+                db_success = db_manager.insert_measurement(
+                    total_distance=0.0,
+                    stitch_length=0.0,
+                    seam_allowance=0.0,
+                    ignore_limits=True,
+                )
+                if db_success:
+                    print("DB reset row inserted (0,0,0)")
+                else:
+                    print("DB reset row insert failed")
             else:
-                print("Serial reset command failed")
-        else:
-            print("Serial reader unavailable for reset command")
-        
+                print("DB unavailable for reset row insert")
 
-        # Give ESP32 time to apply reset before using stitch count baseline again.
-        time.sleep(reset_post_delay_sec)
+            if serial_communicator:
+                serial_success = serial_communicator.send_command("R")
+                if serial_success:
+                    print("Serial reset command sent: R")
+                else:
+                    print("Serial reset command failed")
+            else:
+                print("Serial reader unavailable for reset command")
 
-        serial_communicator.current_total_distance = 0.0
-        serial_communicator.last_avg_stitch_length_mm = 0.0
-        stitch_length_buffer.clear()
-        seam_allowance_buffer.clear()
-        print("Runtime counters and buffers reset")
+            # Give ESP32 time to apply reset before using stitch count baseline again.
+            time.sleep(reset_post_delay_sec)
+        finally:
+            processing_lock.release()
+            reset_in_progress.clear()
 
         if db_success and serial_success and heartbeat:
             heartbeat.publish_reset_success()
@@ -589,17 +655,22 @@ def main():
         print(f"Last measurement date in DB: {last_date}")
         today_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         print(f"Current system date: {today_str}")
+        startup_reset_done = False
 
         if last_date and last_date[:10] < today_str[:10]:  # Compare only YYYY-MM-DD
             print("Resetting total distance on startup...")
             try:
-                db_manager.reset_total_distance_on_startup()
+                startup_reset_done = bool(db_manager.reset_total_distance_on_startup())
+                if startup_reset_done:
+                    reset_runtime_state(serial_communicator)
             except Exception as e:
                 print(f"Failed to reset total distance: {e}")
 
         elif last_date== "No records found":
             print("No records found in DB adding the first row")
-            db_manager.reset_total_distance_on_startup()
+            startup_reset_done = bool(db_manager.reset_total_distance_on_startup())
+            if startup_reset_done:
+                reset_runtime_state(serial_communicator)
 
         elif last_date==None:
             print("Could not retrieve last measurement date - skipping total distance reset")
@@ -608,10 +679,14 @@ def main():
             print("Total distance reset not needed on startup")
 
         # retrieving the last total distance from the database to initialize counting session with the correct value
-        last_total_distance = db_manager.get_last_total_distance()
-        if last_total_distance is not None:
-            serial_communicator.current_total_distance = last_total_distance
-            print(f"Initialized total distance from DB: {last_total_distance:.2f}mm")
+        if startup_reset_done:
+            serial_communicator.current_total_distance = 0.0
+            print("Initialized total distance after startup reset: 0.00mm")
+        else:
+            last_total_distance = db_manager.get_last_total_distance()
+            if last_total_distance is not None:
+                serial_communicator.current_total_distance = last_total_distance
+                print(f"Initialized total distance from DB: {last_total_distance:.2f}mm")
 
         # Seed fallback buffers with recent real measurements from DB.
         recent_real = db_manager.get_recent_valid_measurements(limit=5)
